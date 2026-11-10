@@ -1,8 +1,12 @@
-# ☁️ Agricultura Ecológica en España – Pipeline en Azure
+# ☁️ Agroeco EU Cloud Pipeline: agricultura ecológica en Azure
 
-Versión en la nube del proyecto [**Agricultura Ecológica en España (2012-2024)**](https://github.com/SamAnaya11):
+Versión en la nube del proyecto [**Agricultura Ecológica en España (2012-2024)**]([URL_PROYECTO_1]):
 el mismo análisis con datos de **Eurostat**, pero ahora el pipeline funciona **solo en Azure**. Cada mes
 descarga los datos, los guarda, los limpia y los carga en una base de datos en la nube, **sin intervención manual**.
+
+> ℹ️ **Nota:** el proyecto se desplegó con una **suscripción de prueba gratuita** de Azure. Las
+> [capturas](#-capturas) documentan que el pipeline funciona de principio a fin; los recursos pueden
+> borrarse en cualquier momento con [`borrar_todo`](scripts/borrar_todo.ps1) y volver a crearse con `desplegar`.
 
 ## 📌 Estado del proyecto
 
@@ -204,10 +208,36 @@ La cadena de conexión solo puede llevar las palabras clave que admite el driver
 Cada mes se borran y se vuelven a crear las tablas (como en el original), pero **todo en una transacción**:
 si algo falla, se deshace y la base de datos conserva los datos del mes anterior.
 
-### 6. Secretos fuera del repositorio
+### 6. Secretos y seguridad
 
-La contraseña de SQL la pide Azure CLI al desplegar y solo se guarda en la configuración de la Function App.
-`.env`, `local.settings.json` y los parámetros locales están en `.gitignore`.
+**Secretos fuera del repositorio.** La contraseña de SQL la pide Azure CLI al desplegar y solo se guarda en
+la configuración de la Function App. `.env`, `local.settings.json` y los parámetros locales están en `.gitignore`.
+
+**Firewall de SQL: regla `AllowAllWindowsAzureIps` (0.0.0.0).** Una Function App en Flex Consumption no
+tiene una IP fija, así que no se puede abrir el firewall solo para ella. La regla especial `0.0.0.0` equivale a la
+opción del portal *"Allow Azure services and resources to access this server"*:
+
+| | |
+|---|---|
+| ✅ Permite | Conexiones desde **cualquier servicio de Azure**: la Function y también el Query editor del portal |
+| ⚠️ Ojo | "Cualquier servicio de Azure" incluye recursos de **otros clientes** de Azure, no solo los de esta suscripción |
+| 🔒 Lo que sigue protegiendo | Para entrar hace falta el usuario y la contraseña del administrador SQL; la conexión va cifrada (TLS 1.2) |
+| 🌐 Desde Internet | Bloqueado, salvo la IP que se pasa con `-IpCliente` (regla `ip-cliente`) |
+
+Es una configuración aceptable para un proyecto de pruebas con datos públicos, pero no la ideal. En la
+**Fase 3** se endurecerá con **identidad administrada**: la Function se autenticará en SQL con su propia
+identidad de Microsoft Entra ID, sin contraseña, y el usuario SQL podrá desactivarse. Cerrar también la red (quitar
+la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*, que **sí tiene coste**
+(unos 7 €/mes), así que se documentará como mejora opcional.
+
+## 🧩 Problemas encontrados y cómo se resolvieron
+
+| Problema | Causa | Solución |
+|---|---|---|
+| `PasswordNotComplex` al crear el servidor SQL | Azure SQL exige una contraseña compleja: mayúsculas, minúsculas, números y símbolos, y que no contenga el nombre de usuario | Usar una contraseña que cumpla las reglas. El Bicep pide además un mínimo de 12 caracteres, y se evitan `;` `{` `}` para no romper la cadena de conexión |
+| `ProvisioningDisabled` al crear la base de datos gratuita | La oferta gratuita de Azure SQL no está disponible en Spain Central para la suscripción de prueba | Comprobarlo con la API de capacidades de SQL y mover solo SQL a **France Central** (parámetro `ubicacionSql`). Ver [Decisiones técnicas](#1-azure-sql-en-france-central-y-el-resto-en-spain-central) |
+| `ConnectionStringParseError: "connection timeout" is not a recognized keyword` | El driver `mssql-python` solo admite una lista cerrada de palabras clave en la cadena de conexión | Quitar `Connection Timeout` de la cadena y pasar el tiempo de espera en el código: `connect(..., timeout=60)` |
+| Host vacío al leer la URL de la Function con Azure CLI | En Flex Consumption, `az functionapp show --query defaultHostName` devuelve vacío | Leer `properties.defaultHostName`. Los scripts `ejecutar_manual` y la salida `hostFunction` del Bicep ya lo hacen así |
 
 ## 📁 Estructura del proyecto
 
@@ -216,7 +246,7 @@ La contraseña de SQL la pide Azure CLI al desplegar y solo se guarda en la conf
 ├── function_app/     # Azure Function (timer + HTTP), host.json, requirements.txt
 ├── src/              # Descarga, limpieza, almacenamiento, carga SQL y orquestador
 ├── sql/              # Esquema y 10 consultas en T-SQL
-├── scripts/          # desplegar / borrar_todo (.ps1 y .sh) y empaquetar.py
+├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh) y empaquetar.py
 ├── notebooks/        # Consultas contra Azure SQL
 ├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, capturas/
 ├── .env.example
@@ -271,4 +301,4 @@ La contraseña de SQL la pide Azure CLI al desplegar y solo se guarda en la conf
 
 ## 👤 Autor
 
-**[Samuel Anaya Garcia]** – [LinkedIn](https://www.linkedin.com/in/samuel-anaya-garcia) · [GitHub](https://github.com/SamAnaya11)
+**Samuel Anaya Garcia** – [LinkedIn](https://www.linkedin.com/in/samuel-anaya-garcia) · [GitHub](https://github.com/SamAnaya11)
