@@ -1,0 +1,95 @@
+# 🏗️ Arquitectura
+
+## 🔄 Flujo de datos
+
+Todos los recursos están en el grupo `rg-agroeco-dev`, pero en **dos regiones**:
+**Spain Central** para todo salvo SQL, y **France Central** para el servidor y la base de datos SQL
+(la oferta gratuita no está disponible en Spain Central para la suscripción de prueba; ver README,
+"Decisiones técnicas").
+
+```
+                    ┌─────────────── Spain Central ───────────────────────────────────────────┐
+                    │                                                                          │
+ ┌──────────────┐   │  ┌────────────────────────────────┐      ┌─────────────────────────────┐ │
+ │ Temporizador │───┼─>│ Function App (Flex Consumption) │      │ Storage Account             │ │
+ │ día 1, 06:00 │   │  │ func-agroeco-dev-XXXXX          │      │ stagroecodevXXXXX           │ │
+ └──────────────┘   │  │                                 │ 2 ──>│  raw/AAAA-MM-DD/*.tsv       │ │
+ ┌──────────────┐   │  │  pipeline_mensual (timer)       │ 4 ──>│  processed/AAAA-MM-DD/*.csv │ │
+ │ Petición POST│───┼─>│  pipeline_manual  (HTTP)        │      │  despliegue/ (código)       │ │
+ │ (pruebas)    │   │  │                                 │      └─────────────────────────────┘ │
+ └──────────────┘   │  │  src/pipeline.py                │                                      │
+ ┌──────────────┐ 1 │  │   1. descarga.py                │      ┌─────────────────────────────┐ │
+ │ API Eurostat │<──┼──│   3. limpieza.py                │ logs │ Application Insights        │ │
+ └──────────────┘   │  │   5. carga_sql.py               │ ────>│ appi-agroeco-dev            │ │
+                    │  └───────────────┬─────────────────┘      │  → log-agroeco-dev          │ │
+                    │                  │                        └─────────────────────────────┘ │
+                    └──────────────────┼───────────────────────────────────────────────────────┘
+                                       │ 5  (conexión cifrada, puerto 1433)
+                    ┌──────────────────┼────── France Central ──────┐
+                    │                  v                             │
+                    │  ┌────────────────────────────────────────┐   │
+                    │  │ Azure SQL Database (oferta gratuita)   │   │
+                    │  │ sql-agroeco-dev-XXXXX / sqldb-agroeco  │   │
+                    │  │ modelo en estrella (6 tablas + vista)  │   │
+                    │  └───────────────────┬────────────────────┘   │
+                    └──────────────────────┼────────────────────────┘
+                                           v
+                    Portal (Query editor) o notebook → sql/02_consultas_analisis.sql
+```
+
+1. La Function descarga las 4 tablas de la API de Eurostat.
+2. Guarda los TSV originales en `raw/` (una carpeta por fecha → histórico).
+3. Los limpia con pandas (mismo código que el proyecto original).
+4. Guarda las 6 tablas limpias en CSV en `processed/`.
+5. Borra y vuelve a crear el esquema en Azure SQL y carga las tablas, todo en una transacción.
+
+## 🏷️ Convención de nombres
+
+Formato: **`<abreviatura>-<prefijo>-<entorno>[-<sufijo>]`**
+
+| Parte | Valor | Explicación |
+|---|---|---|
+| abreviatura | `rg`, `st`, `sql`... | Las [recomendadas por Microsoft](https://learn.microsoft.com/es-es/azure/cloud-adoption-framework/ready/azure-best-practices/resource-abbreviations) |
+| prefijo | `agroeco` | Común a todo el proyecto (parámetro `prefijo` del Bicep) |
+| entorno | `dev` | Permite tener en el futuro `prod` sin choques de nombres |
+| sufijo | 5 caracteres (`uniqueString`) | Solo en recursos cuyo nombre debe ser **único en todo Azure**. Se calcula a partir del ID de la suscripción, así que siempre sale el mismo |
+
+| Recurso | Nombre | ¿Único global? |
+|---|---|---|
+| Grupo de recursos | `rg-agroeco-dev` | No |
+| Storage Account | `stagroecodev<sufijo>` (sin guiones: Azure solo admite minúsculas y números) | Sí |
+| Servidor SQL (France Central) | `sql-agroeco-dev-<sufijo>` | Sí |
+| Base de datos SQL (France Central) | `sqldb-agroeco` | No |
+| Plan de Functions | `asp-agroeco-dev` | No |
+| Function App | `func-agroeco-dev-<sufijo>` | Sí |
+| Application Insights | `appi-agroeco-dev` | No |
+| Log Analytics | `log-agroeco-dev` | No |
+| Presupuesto (suscripción) | `presupuesto-agroeco` | No |
+
+Todos los recursos llevan las etiquetas `proyecto=agroeco`, `entorno=dev` y `gestionadoPor=bicep`.
+
+## 📦 Cómo se empaqueta el código
+
+```
+Repositorio                         Paquete .zip que recibe Azure
+───────────                         ─────────────────────────────
+function_app/function_app.py   ──>  function_app.py
+function_app/host.json         ──>  host.json
+function_app/requirements.txt  ──>  requirements.txt
+src/*.py                       ──>  src/*.py
+sql/*.sql                      ──>  sql/*.sql
+```
+
+`scripts/empaquetar.py` crea el zip y Azure instala las dependencias en Linux
+(*remote build*). Así `src/` existe una sola vez en el repositorio y lo pueden usar
+tanto la Function como las ejecuciones locales (`python -m src.pipeline`).
+
+## 🔐 Secretos (Fase 1)
+
+| Secreto | Dónde vive | Dónde NO está |
+|---|---|---|
+| Contraseña del admin SQL | La pide Azure CLI al desplegar → configuración de la Function App | Repositorio, archivos de parámetros, historial de la consola |
+| Clave de la Storage Account | La lee el Bicep (`listKeys()`) → configuración de la Function App | Repositorio |
+| Clave de la función HTTP | La genera Azure; se consulta con `az functionapp function keys list` | Repositorio |
+
+En la Fase 3 se sustituyen las cadenas de conexión por identidad administrada.

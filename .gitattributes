@@ -1,0 +1,5 @@
+# Finales de línea: los .sh deben tener LF (si no, bash falla en Linux/Cloud Shell)
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.py   text eol=lf
+*.bicep text eol=lf

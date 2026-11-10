@@ -1,0 +1,55 @@
+# =====================================================================
+# Secretos y configuración local  (NUNCA se suben a GitHub)
+# =====================================================================
+.env
+.env.*
+!.env.example
+local.settings.json
+*.publishsettings
+*.pfx
+*.pem
+*.key
+# Archivos de parámetros reales (los de ejemplo sí se suben)
+*.parameters.local.json
+*.local.bicepparam
+
+# =====================================================================
+# Proyecto original (es otro repositorio; se usa solo como referencia)
+# =====================================================================
+proyecto_original_1/
+
+# =====================================================================
+# Python
+# =====================================================================
+.venv/
+venv/
+__pycache__/
+*.pyc
+.python_packages/
+.pytest_cache/
+
+# =====================================================================
+# Datos generados en ejecuciones locales (en la nube viven en Blob Storage)
+# =====================================================================
+data/
+*.db
+
+# =====================================================================
+# Azure Functions / Bicep
+# =====================================================================
+bin/
+obj/
+appsettings.json
+infra/*.json
+!infra/*.example.json
+.azure/
+
+# =====================================================================
+# Sistema operativo / editores
+# =====================================================================
+~$*
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

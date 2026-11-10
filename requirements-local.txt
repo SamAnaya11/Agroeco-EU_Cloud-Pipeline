@@ -1,0 +1,9 @@
+# Dependencias para trabajar en TU ordenador (pruebas del pipeline y notebook).
+# La Function usa function_app/requirements.txt.
+#
+# Crea el entorno virtual FUERA de OneDrive (ver README):
+#   python -m venv "$env:LOCALAPPDATA\venvs\agroeco"
+#   & "$env:LOCALAPPDATA\venvs\agroeco\Scripts\Activate.ps1"
+#   pip install -r requirements-local.txt
+-r function_app/requirements.txt
+jupyter>=1.0
