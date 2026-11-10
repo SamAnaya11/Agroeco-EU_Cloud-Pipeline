@@ -10,6 +10,14 @@
 //
 // Coste: ver README, sección "Costes". Todo está configurado para el
 // mínimo coste posible.
+//
+// Se puede desplegar de dos formas:
+//   - Desde main.bicep (scripts/desplegar.ps1): crea también el grupo de recursos.
+//   - Directamente sobre el grupo (GitHub Actions):
+//       az deployment group create -g rg-agroeco-dev --template-file infra/modulos/recursos.bicep ...
+//     GitHub solo tiene permisos sobre el grupo, no sobre la suscripción.
+// Por eso el sufijo y las etiquetas se calculan AQUÍ: así los nombres son los
+// mismos se despliegue de una forma u otra.
 // =====================================================================
 
 // Longitudes limitadas para que el nombre de la Storage Account (máx. 24) siempre quepa:
@@ -20,16 +28,23 @@ param prefijo string
 @minLength(1)
 @maxLength(4)
 param entorno string
-@minLength(5)
-@maxLength(5)
-param sufijo string
 param ubicacion string
 param ubicacionSql string
 param sqlUsuarioAdmin string
 @secure()
+@minLength(12)
 param sqlContrasenaAdmin string
-param ipCliente string
-param etiquetas object
+param ipCliente string = ''
+
+// Sufijo de 5 caracteres, siempre el mismo para la misma suscripción
+// (solo en los nombres que deben ser únicos en todo Azure)
+var sufijo = take(uniqueString(subscription().id, prefijo, entorno), 5)
+
+var etiquetas = {
+  proyecto: prefijo
+  entorno: entorno
+  gestionadoPor: 'bicep'
+}
 
 // ---------------------------------------------------------------------
 // Nombres

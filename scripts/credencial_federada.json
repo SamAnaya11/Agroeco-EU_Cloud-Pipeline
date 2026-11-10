@@ -1,0 +1,7 @@
+{
+  "name": "github-agroeco-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:SamAnaya11/Agroeco-EU_Cloud-Pipeline:ref:refs/heads/main",
+  "description": "GitHub Actions, rama main del repositorio Agroeco-EU_Cloud-Pipeline",
+  "audiences": ["api://AzureADTokenExchange"]
+}

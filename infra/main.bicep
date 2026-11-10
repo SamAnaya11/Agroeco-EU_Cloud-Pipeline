@@ -43,9 +43,8 @@ param sqlContrasenaAdmin string
 @description('Opcional: tu IP pública, para consultar la base de datos desde tu ordenador o el portal. Vacío = sin regla.')
 param ipCliente string = ''
 
-// Sufijo de 5 caracteres, siempre el mismo para la misma suscripción
-var sufijo = take(uniqueString(subscription().id, prefijo, entorno), 5)
-
+// El sufijo de 5 caracteres de los nombres únicos se calcula dentro del módulo
+// (modulos/recursos.bicep), para que GitHub Actions pueda desplegarlo solo.
 var etiquetas = {
   proyecto: prefijo
   entorno: entorno
@@ -64,13 +63,11 @@ module recursos 'modulos/recursos.bicep' = {
   params: {
     prefijo: prefijo
     entorno: entorno
-    sufijo: sufijo
     ubicacion: ubicacion
     ubicacionSql: ubicacionSql
     sqlUsuarioAdmin: sqlUsuarioAdmin
     sqlContrasenaAdmin: sqlContrasenaAdmin
     ipCliente: ipCliente
-    etiquetas: etiquetas
   }
 }
 

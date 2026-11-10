@@ -14,7 +14,7 @@ descarga los datos, los guarda, los limpia y los carga en una base de datos en l
 |---|---|---|
 | 0 | Análisis del original, migración SQLite → T-SQL, presupuesto de 5 € | ✅ Completada |
 | 1 | Infraestructura con Bicep + Function mensual y manual + carga en Azure SQL | ✅ Completada |
-| 2 | Despliegue automático con GitHub Actions (OIDC) | 🔜 Pendiente |
+| 2 | Despliegue automático con GitHub Actions (OIDC) | 🚧 En curso |
 | 3 | Seguridad (identidad administrada / Key Vault) y alerta si falla la Function | 🔜 Opcional |
 
 **Primera ejecución en Azure (09/11/2026):** 28 países, 17 cultivos, 13.529 filas de superficie, 620 de % SAU,
@@ -121,6 +121,43 @@ Invoke-RestMethod -Method Post -Uri "https://$Host_/api/ejecutar?code=$Clave" -T
 También vale el **Default domain** que muestra el portal (Function App → Overview).
 
 ⚠️ **OneDrive:** crea el entorno virtual **fuera** de OneDrive (por ejemplo en `%LOCALAPPDATA%\venvs\agroeco`).
+
+## 🔁 CI/CD con GitHub Actions
+
+Después del primer despliegue desde tu ordenador, **cada `push` a `main` despliega solo**
+([`.github/workflows/desplegar.yml`](.github/workflows/desplegar.yml)). También se puede lanzar a mano desde la
+pestaña **Actions → Desplegar en Azure → Run workflow**.
+
+```
+ git push (main) ──> 1. comprobar ─────────> 2. infraestructura ───────────> 3. código
+                     · compila el Bicep      · solo si cambia infra/         · empaquetar.py
+                     · crea el paquete       · az deployment group create    · config-zip (remote build)
+                     · importa la Function
+```
+
+| Trabajo | Qué hace | ¿Se conecta a Azure? |
+|---|---|---|
+| `comprobar` | Compila el Bicep, crea el paquete con `empaquetar.py` e importa la Function para ver que encuentra `pipeline_mensual` y `pipeline_manual` | No |
+| `infraestructura` | Despliega `infra/modulos/recursos.bicep` en el grupo de recursos. Solo si ha cambiado algo en `infra/` (o si se marca la casilla al lanzarlo a mano) | Sí |
+| `codigo` | Sube el código a la Function App, igual que `desplegar.ps1 -SoloCodigo` | Sí |
+
+Los cambios que solo tocan documentación (`*.md`, `docs/`) **no** lanzan el workflow.
+
+**Inicio de sesión sin contraseñas (OIDC):** GitHub no guarda ninguna clave de Azure. Azure confía en los tokens
+que GitHub firma para **este repositorio y la rama `main`**, y GitHub solo tiene el rol **Contributor sobre
+`rg-agroeco-dev`**. Explicación completa, comandos para crear la identidad y errores típicos:
+[`docs/cicd_oidc.md`](docs/cicd_oidc.md).
+
+**Secretos de GitHub** (*Settings → Secrets and variables → Actions → New repository secret*):
+
+| Secreto | Valor | De dónde sale |
+|---|---|---|
+| `AZURE_CLIENT_ID` | ID de la aplicación de Entra ID | `$AppId` (`az ad app create ... --query appId`) |
+| `AZURE_TENANT_ID` | ID del directorio | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | ID de la suscripción | `az account show --query id -o tsv` |
+| `SQL_ADMIN_PASSWORD` | Contraseña del administrador SQL | La que usaste en `desplegar.ps1` |
+
+**Coste:** 0 €. GitHub Actions es gratis en repositorios públicos.
 
 ## 💶 Costes estimados
 
@@ -242,13 +279,14 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 ## 📁 Estructura del proyecto
 
 ```
+├── .github/workflows/  # desplegar.yml: CI/CD con GitHub Actions
 ├── infra/            # Bicep: main.bicep, modulos/recursos.bicep, presupuesto.bicep, parámetros de ejemplo
 ├── function_app/     # Azure Function (timer + HTTP), host.json, requirements.txt
 ├── src/              # Descarga, limpieza, almacenamiento, carga SQL y orquestador
 ├── sql/              # Esquema y 10 consultas en T-SQL
-├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh) y empaquetar.py
+├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credencial_federada.json
 ├── notebooks/        # Consultas contra Azure SQL
-├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, capturas/
+├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, capturas/
 ├── .env.example
 └── README.md
 ```
@@ -298,6 +336,18 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 **Ejecución manual.** `ejecutar_manual.ps1` lanza el pipeline y devuelve las filas cargadas en cada tabla.
 
 ![Ejecución desde la terminal](docs/capturas/08_ejecucion_terminal.png)
+
+**Secretos de GitHub Actions.** Los 4 secretos que usa el workflow. GitHub nunca vuelve a mostrar su valor, solo el nombre.
+
+![Secretos de GitHub](docs/capturas/10_github_secretos.png)
+
+**Credencial federada (OIDC).** La aplicación `github-agroeco-despliegue` confía en la rama `main` de este repositorio y no tiene ningún *client secret* (*Client secrets (0)*).
+
+![Credencial federada en Entra ID](docs/capturas/11_entra_credencial_federada.png)
+
+**Permisos de GitHub en Azure.** La identidad de GitHub solo tiene el rol *Contributor* sobre `rg-agroeco-dev` (*This resource*), no sobre toda la suscripción.
+
+![Rol Contributor en el grupo de recursos](docs/capturas/11b_iam_contributor.png)
 
 ## 👤 Autor
 

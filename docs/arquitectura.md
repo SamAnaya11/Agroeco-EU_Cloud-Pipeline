@@ -93,3 +93,15 @@ tanto la Function como las ejecuciones locales (`python -m src.pipeline`).
 | Clave de la función HTTP | La genera Azure; se consulta con `az functionapp function keys list` | Repositorio |
 
 En la Fase 3 se sustituyen las cadenas de conexión por identidad administrada.
+
+## 🚚 Dos formas de desplegar (Fase 2)
+
+| | Desde tu ordenador | Desde GitHub Actions |
+|---|---|---|
+| Script | `scripts/desplegar.ps1` / `.sh` | `.github/workflows/desplegar.yml` |
+| Plantilla | `infra/main.bicep` (suscripción: crea el grupo) | `infra/modulos/recursos.bicep` (directamente en el grupo) |
+| Identidad | Tu usuario (`az login`) | Aplicación de Entra ID con OIDC, rol Contributor solo sobre `rg-agroeco-dev` |
+| Cuándo | El primer despliegue, o después de `borrar_todo` | Cada `push` a `main` |
+
+Las dos usan el mismo módulo y calculan el sufijo dentro de `recursos.bicep`, así que los nombres son idénticos.
+Detalles en [`cicd_oidc.md`](cicd_oidc.md).

@@ -1,0 +1,180 @@
+# =====================================================================
+# desplegar.yml
+# Despliega el proyecto en Azure cada vez que se sube código a main.
+#
+#   1. comprobar        -> compila el Bicep, crea el paquete e importa la Function
+#   2. infraestructura  -> despliega el Bicep (SOLO si ha cambiado algo en infra/)
+#   3. codigo           -> sube el código a la Function App (remote build)
+#
+# Inicio de sesión en Azure con OIDC (credencial federada): no hay ninguna
+# contraseña de Azure guardada en GitHub. Ver docs/cicd_oidc.md.
+#
+# Secretos necesarios (Settings -> Secrets and variables -> Actions):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, SQL_ADMIN_PASSWORD
+# =====================================================================
+name: Desplegar en Azure
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:            # cambiar solo documentación no despliega nada
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:         # botón "Run workflow" en la pestaña Actions
+    inputs:
+      desplegar_infraestructura:
+        description: "¿Desplegar también la infraestructura (Bicep)?"
+        type: boolean
+        default: false
+
+# Permisos mínimos del token de GitHub
+permissions:
+  id-token: write            # necesario para pedir el token OIDC
+  contents: read             # leer el código del repositorio
+
+# Nunca dos despliegues a la vez (el segundo espera a que termine el primero)
+concurrency:
+  group: despliegue-azure
+  cancel-in-progress: false
+
+env:
+  GRUPO_RECURSOS: rg-agroeco-dev
+  NOMBRE_DESPLIEGUE: recursos-agroeco-dev
+  VERSION_PYTHON: "3.14"     # la misma que la Function App
+
+jobs:
+  # -------------------------------------------------------------------
+  # 1. Comprobaciones (no se conecta a Azure)
+  # -------------------------------------------------------------------
+  comprobar:
+    runs-on: ubuntu-latest
+    outputs:
+      cambia_infra: ${{ steps.cambios.outputs.cambia_infra }}
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0     # historial completo, para ver qué archivos han cambiado
+
+      - name: Compilar el Bicep
+        run: |
+          az bicep install
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep build --file infra/modulos/recursos.bicep --stdout > /dev/null
+          echo "[OK] Bicep sin errores"
+
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.VERSION_PYTHON }}
+
+      - name: Instalar dependencias
+        run: |
+          # Librería del sistema que necesita mssql-python en Linux
+          sudo apt-get install -y -qq libltdl7 > /dev/null
+          pip install --quiet -r function_app/requirements.txt
+
+      - name: Crear el paquete e importar la Function
+        run: |
+          # Se prueba el MISMO paquete que se sube a Azure
+          python scripts/empaquetar.py "$RUNNER_TEMP/paquete.zip"
+          mkdir "$RUNNER_TEMP/paquete"
+          unzip -q "$RUNNER_TEMP/paquete.zip" -d "$RUNNER_TEMP/paquete"
+          cd "$RUNNER_TEMP/paquete"
+          python -c "
+          import function_app
+          nombres = [f.get_function_name() for f in function_app.app.get_functions()]
+          print('Funciones encontradas:', nombres)
+          assert 'pipeline_mensual' in nombres and 'pipeline_manual' in nombres
+          "
+
+      - name: ¿Ha cambiado la infraestructura?
+        id: cambios
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CAMBIA="${{ inputs.desplegar_infraestructura }}"
+          elif git diff --quiet "${{ github.event.before }}" "${{ github.sha }}" -- infra/; then
+            CAMBIA=false     # ningún archivo de infra/ ha cambiado
+          else
+            CAMBIA=true      # hay cambios en infra/ (o no se puede comparar: se despliega por seguridad)
+          fi
+          echo "Desplegar infraestructura: $CAMBIA"
+          echo "cambia_infra=$CAMBIA" >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------
+  # 2. Infraestructura (solo si ha cambiado infra/)
+  # -------------------------------------------------------------------
+  infraestructura:
+    needs: comprobar
+    if: needs.comprobar.outputs.cambia_infra == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Iniciar sesión en Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Se despliega el módulo directamente sobre el grupo de recursos (no main.bicep),
+      # porque la identidad de GitHub solo tiene permisos sobre el grupo.
+      # El grupo de recursos debe existir: lo crea scripts/desplegar.ps1 la primera vez.
+      - name: Desplegar el Bicep
+        env:
+          SQL_CONTRASENA: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        run: |
+          az deployment group create \
+            --name "$NOMBRE_DESPLIEGUE" \
+            --resource-group "$GRUPO_RECURSOS" \
+            --template-file infra/modulos/recursos.bicep \
+            --parameters @infra/main.parameters.example.json \
+            --parameters sqlContrasenaAdmin="$SQL_CONTRASENA" \
+            --output none
+          echo "[OK] Infraestructura desplegada"
+
+  # -------------------------------------------------------------------
+  # 3. Código de la Function
+  # -------------------------------------------------------------------
+  codigo:
+    needs: [comprobar, infraestructura]
+    # Se ejecuta si las comprobaciones han ido bien y la infraestructura ha ido
+    # bien o se ha saltado (porque no había cambios en infra/)
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' &&
+      needs.comprobar.result == 'success' &&
+      (needs.infraestructura.result == 'success' || needs.infraestructura.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v5
+
+      - name: Instalar Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.VERSION_PYTHON }}
+
+      - name: Iniciar sesión en Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Subir el código (remote build)
+        run: |
+          APP=$(az functionapp list --resource-group "$GRUPO_RECURSOS" --query "[0].name" -o tsv)
+          if [ -z "$APP" ]; then echo "No hay ninguna Function App en $GRUPO_RECURSOS"; exit 1; fi
+          echo "Function App: $APP"
+
+          python scripts/empaquetar.py "$RUNNER_TEMP/paquete.zip"
+          az functionapp deployment source config-zip \
+            --resource-group "$GRUPO_RECURSOS" \
+            --name "$APP" \
+            --src "$RUNNER_TEMP/paquete.zip" \
+            --build-remote true \
+            --timeout 900 \
+            --output none
+          echo "[OK] Código desplegado en $APP"
