@@ -14,7 +14,7 @@ descarga los datos, los guarda, los limpia y los carga en una base de datos en l
 |---|---|---|
 | 0 | Análisis del original, migración SQLite → T-SQL, presupuesto de 5 € | ✅ Completada |
 | 1 | Infraestructura con Bicep + Function mensual y manual + carga en Azure SQL | ✅ Completada |
-| 2 | Despliegue automático con GitHub Actions (OIDC) | 🚧 En curso |
+| 2 | Despliegue automático con GitHub Actions (OIDC) | ✅ Completada |
 | 3 | Seguridad (identidad administrada / Key Vault) y alerta si falla la Function | 🔜 Opcional |
 
 **Primera ejecución en Azure (09/11/2026):** 28 países, 17 cultivos, 13.529 filas de superficie, 620 de % SAU,
@@ -275,6 +275,7 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 | `ProvisioningDisabled` al crear la base de datos gratuita | La oferta gratuita de Azure SQL no está disponible en Spain Central para la suscripción de prueba | Comprobarlo con la API de capacidades de SQL y mover solo SQL a **France Central** (parámetro `ubicacionSql`). Ver [Decisiones técnicas](#1-azure-sql-en-france-central-y-el-resto-en-spain-central) |
 | `ConnectionStringParseError: "connection timeout" is not a recognized keyword` | El driver `mssql-python` solo admite una lista cerrada de palabras clave en la cadena de conexión | Quitar `Connection Timeout` de la cadena y pasar el tiempo de espera en el código: `connect(..., timeout=60)` |
 | Host vacío al leer la URL de la Function con Azure CLI | En Flex Consumption, `az functionapp show --query defaultHostName` devuelve vacío | Leer `properties.defaultHostName`. Los scripts `ejecutar_manual` y la salida `hostFunction` del Bicep ya lo hacen así |
+| `AADSTS700213: No matching federated identity record found` al iniciar sesión desde GitHub Actions | GitHub envió el *subject* con **IDs inmutables** (`repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main`) y la credencial federada esperaba el formato clásico, sin IDs | Copiar el *subject* exacto del mensaje de error y crear una segunda credencial federada (escenario *Other issuer*) con ese valor: `scripts/credencial_federada_ids.json`. Después, *Re-run failed jobs*. Ver [`docs/cicd_oidc.md`](docs/cicd_oidc.md#aadsts700213-el-subject-con-ids-inmutables) |
 
 ## 📁 Estructura del proyecto
 
@@ -284,7 +285,7 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 ├── function_app/     # Azure Function (timer + HTTP), host.json, requirements.txt
 ├── src/              # Descarga, limpieza, almacenamiento, carga SQL y orquestador
 ├── sql/              # Esquema y 10 consultas en T-SQL
-├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credencial_federada.json
+├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credenciales federadas (.json)
 ├── notebooks/        # Consultas contra Azure SQL
 ├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, capturas/
 ├── .env.example
@@ -336,6 +337,14 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 **Ejecución manual.** `ejecutar_manual.ps1` lanza el pipeline y devuelve las filas cargadas en cada tabla.
 
 ![Ejecución desde la terminal](docs/capturas/08_ejecucion_terminal.png)
+
+**Workflow de GitHub Actions.** Despliegue automático tras un push a `main`: `comprobar`, `infraestructura` y `codigo` en verde, en unos 4 minutos.
+
+![Workflow de GitHub Actions](docs/capturas/09_github_actions.png)
+
+**Inicio de sesión OIDC.** GitHub entra en Azure sin contraseña; en el log se ve el *subject* con IDs inmutables que tiene que coincidir con la credencial federada.
+
+![Inicio de sesión OIDC en GitHub Actions](docs/capturas/09b_github_actions_login.png)
 
 **Secretos de GitHub Actions.** Los 4 secretos que usa el workflow. GitHub nunca vuelve a mostrar su valor, solo el nombre.
 

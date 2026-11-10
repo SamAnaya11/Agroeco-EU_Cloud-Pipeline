@@ -111,9 +111,19 @@ $SpId = az ad sp create --id $AppId --query id -o tsv
 az role assignment create --assignee-object-id $SpId --assignee-principal-type ServicePrincipal `
   --role Contributor --scope $GrupoId
 
-# 4. Credencial federada: Azure confía en los tokens de GitHub de este repositorio y la rama main
-az ad app federated-credential create --id $AppId --parameters "@scripts/credencial_federada.json"
+# 4. Credenciales federadas: Azure confía en los tokens de GitHub de este repositorio y la rama main.
+#    Son dos porque GitHub puede escribir el "subject" de dos formas (ver AADSTS700213 más abajo):
+az ad app federated-credential create --id $AppId --parameters "@scripts/credencial_federada.json"      # formato clásico
+az ad app federated-credential create --id $AppId --parameters "@scripts/credencial_federada_ids.json"  # formato con IDs
 ```
+
+| Archivo | Nombre de la credencial | `subject` |
+|---|---|---|
+| `scripts/credencial_federada.json` | `github-agroeco-main` | `repo:SamAnaya11/Agroeco-EU_Cloud-Pipeline:ref:refs/heads/main` |
+| `scripts/credencial_federada_ids.json` | `github-agroeco-main-ids` | `repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main` |
+
+En este proyecto, la que se usa es la de **IDs**. Los números son los IDs públicos de la cuenta y del
+repositorio en GitHub; no son secretos.
 
 Los valores para los secretos de GitHub salen de `$AppId`, `$Tenant` y `$Suscripcion`. Ver la tabla de
 secretos en el [README](../README.md#-cicd-con-github-actions).
@@ -121,8 +131,8 @@ secretos en el [README](../README.md#-cicd-con-github-actions).
 ### Comprobarlo en el portal
 
 - **Microsoft Entra ID → App registrations → All applications → github-agroeco-despliegue →
-  Certificates & secrets → Federated credentials**: debe aparecer `github-agroeco-main`. En
-  *Client secrets* no debe haber ninguno.
+  Certificates & secrets → Federated credentials**: deben aparecer `github-agroeco-main` y
+  `github-agroeco-main-ids`. En *Client secrets* no debe haber ninguno.
 - **Resource groups → rg-agroeco-dev → Access control (IAM) → Role assignments**:
   `github-agroeco-despliegue` con el rol *Contributor*.
 
@@ -130,6 +140,59 @@ secretos en el [README](../README.md#-cicd-con-github-actions).
 
 | Error en GitHub Actions | Causa |
 |---|---|
-| `AADSTS70021: No matching federated identity record found` | El `subject` de la credencial no coincide con el repositorio o la rama (mayúsculas incluidas) |
+| `AADSTS700213: No matching federated identity record found` | El `subject` que envía GitHub no coincide **exactamente** con ninguna credencial federada. Ver abajo |
+| `AADSTS70021: No matching federated identity record found` | Igual que el anterior, en su versión más antigua: el repositorio o la rama no coinciden (mayúsculas incluidas) |
 | `AuthorizationFailed` | Falta la asignación de rol, o se intentó algo fuera del grupo de recursos |
 | `ResourceGroupNotFound` | El grupo no existe: despliega primero con `scripts/desplegar.ps1` |
+
+#### AADSTS700213: el *subject* con IDs inmutables
+
+**Qué pasó en este proyecto:** la primera ejecución del trabajo `infraestructura` falló al iniciar sesión.
+La credencial federada esperaba el formato clásico del *subject*, pero GitHub envió uno que incluye los
+**IDs numéricos** de la cuenta y del repositorio:
+
+```
+Esperado (formato clásico):  repo:SamAnaya11/Agroeco-EU_Cloud-Pipeline:ref:refs/heads/main
+Enviado  (formato con IDs):  repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main
+```
+
+Los IDs no cambian aunque se renombre la cuenta o el repositorio. Así nadie puede crear después un
+repositorio con el mismo nombre y heredar el acceso a Azure.
+
+**Cómo leer el *subject* que envía GitHub.** Aparece en dos sitios del log del paso *Iniciar sesión en Azure (OIDC)*:
+
+1. En el propio error: `AADSTS700213: No matching federated identity record found for presented assertion
+   subject 'repo:...'`. Lo que va entre comillas es el *subject* exacto.
+2. Al principio del paso, en *Federated token details* → `subject claim - repo:...`. Se muestra también
+   cuando el inicio de sesión funciona (ver la captura `09b_github_actions_login.png`).
+
+Hay que copiarlo **tal cual**, carácter a carácter. Azure compara el texto exacto, incluidas las mayúsculas.
+
+**Solución 1: portal**
+
+1. **Microsoft Entra ID → App registrations → All applications → github-agroeco-despliegue**.
+2. **Certificates & secrets → Federated credentials → + Add credential**.
+3. *Federated credential scenario*: **Other issuer**. El escenario "GitHub Actions deploying Azure resources"
+   construye el *subject* en el formato clásico, así que no sirve para el formato con IDs.
+4. *Issuer*: `https://token.actions.githubusercontent.com`
+5. *Type*: **Explicit subject identifier**. *Value*: el *subject* copiado del log.
+6. *Name*: `github-agroeco-main-ids`. *Audience*: `api://AzureADTokenExchange` (el valor por defecto).
+7. **Add**. Después, en GitHub: **Actions → la ejecución fallida → Re-run failed jobs**.
+
+**Solución 2: Azure CLI**
+
+Se pone el *subject* en un archivo JSON (aquí, `scripts/credencial_federada_ids.json`) y se crea la credencial:
+
+```powershell
+# ID de la aplicación ya creada (solo lectura)
+$AppId = az ad app list --display-name "github-agroeco-despliegue" --query "[0].appId" -o tsv
+
+# Crea la credencial federada con el subject con IDs (gratis)
+az ad app federated-credential create --id $AppId --parameters "@scripts/credencial_federada_ids.json"
+
+# Comprobar: deben salir las dos credenciales
+az ad app federated-credential list --id $AppId --query "[].{nombre:name, subject:subject}" -o table
+```
+
+La credencial clásica (`github-agroeco-main`) se puede dejar: no da más acceso, porque solo sirve para el
+mismo repositorio y la misma rama.
