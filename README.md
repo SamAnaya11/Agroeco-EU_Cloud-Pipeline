@@ -35,14 +35,19 @@ descarga los datos, los guarda, los limpia y los carga en una base de datos en l
 ## 🏗️ Arquitectura
 
 ```
+ git push (main) ──> GitHub Actions: comprobar → infraestructura (Bicep) → código (.zip)
+                            │
+                            │ OIDC: sin contraseña guardada; rol Contributor solo sobre rg-agroeco-dev
+                            v despliega
  Temporizador mensual ─┐
- (o petición POST) ────┴─> Azure Function (Python) ──> API Eurostat
-                                   │
-                                   ├──> Blob Storage   raw/AAAA-MM-DD/*.tsv
-                                   ├──> Blob Storage   processed/AAAA-MM-DD/*.csv
-                                   └──> Azure SQL Database (modelo en estrella)
-                                                │
-                                                └──> consultas de análisis (portal / notebook)
+ (o petición POST) ────┴──> Azure Function (Python) ──> API Eurostat
+                                    │
+                                    ├──> Blob Storage        raw/AAAA-MM-DD/*.tsv
+                                    ├──> Blob Storage        processed/AAAA-MM-DD/*.csv
+                                    ├──> Azure SQL Database  modelo en estrella ──> consultas (portal / notebook)
+                                    │      ↑ identidad administrada: token de Entra ID, sin contraseña
+                                    │
+                                    └──> Application Insights ──> alerta "requests/failed > 0" ──> correo
 ```
 
 Diagrama detallado, regiones y convención de nombres: [`docs/arquitectura.md`](docs/arquitectura.md).
@@ -108,7 +113,7 @@ Si solo cambias código de Python, basta con `.\scripts\desplegar.ps1 -SoloCodig
 
 | Dónde | Qué ver |
 |---|---|
-| Resource groups → `rg-agroeco-dev` | Los 8 recursos |
+| Resource groups → `rg-agroeco-dev` | Todos los recursos del proyecto (Storage, Function, SQL, Application Insights, alerta...) |
 | Function App → Overview → Functions | `pipeline_mensual` (Timer) y `pipeline_manual` (HTTP) |
 | Storage account → Containers → `raw` / `processed` | Una carpeta por fecha de ejecución |
 | SQL database → Query editor (preview) | Las consultas de `sql/02_consultas_analisis.sql` |
@@ -292,7 +297,8 @@ Flex Consumption es el plan sin servidor recomendado por Microsoft, también de 
 ### 4. Driver `mssql-python`
 
 Es el driver oficial de Microsoft para Python e **incluye el driver ODBC** dentro del paquete de pip, así que
-no hay que instalar nada en el sistema. Además permite usar identidad administrada (Fase 3).
+no hay que instalar nada en el sistema. Además admite identidad administrada (`Authentication=ActiveDirectoryMSI`,
+con la librería `azure-identity`), que es como se conecta la Function desde la Fase 3B.
 
 La cadena de conexión solo puede llevar las palabras clave que admite el driver (`Server`, `Database`,
 `UID`, `PWD`, `Encrypt`, `TrustServerCertificate`...). **`Connection Timeout` no es válida** (da
@@ -317,7 +323,7 @@ opción del portal *"Allow Azure services and resources to access this server"*:
 |---|---|
 | ✅ Permite | Conexiones desde **cualquier servicio de Azure**: la Function y también el Query editor del portal |
 | ⚠️ Ojo | "Cualquier servicio de Azure" incluye recursos de **otros clientes** de Azure, no solo los de esta suscripción |
-| 🔒 Lo que sigue protegiendo | Para entrar hace falta el usuario y la contraseña del administrador SQL; la conexión va cifrada (TLS 1.2) |
+| 🔒 Lo que sigue protegiendo | Para entrar hace falta un token de Microsoft Entra de una identidad con usuario en la base de datos (como la Function) o la contraseña del administrador SQL, que ya no está en la Function. La conexión va cifrada (TLS 1.2) |
 | 🌐 Desde Internet | Bloqueado, salvo la IP que se pasa con `-IpCliente` (regla `ip-cliente`) |
 
 Es una configuración aceptable para un proyecto de pruebas con datos públicos, pero no la ideal. En la
@@ -335,14 +341,25 @@ Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-se-puede-quitar-la-regla-de
 
 | Problema | Causa | Solución |
 |---|---|---|
+| `SubscriptionNotFound: The requested subscription ... was not found` en el primer despliegue | La suscripción existía, pero los **proveedores de recursos** (`Microsoft.Sql`, `Microsoft.Insights`, `Microsoft.OperationalInsights`) no estaban registrados en una suscripción nueva | Registrarlos con `az provider register --namespace <proveedor> --wait` (gratis). `desplegar.ps1` y `desplegar.sh` lo hacen ahora en el paso 2 |
 | `PasswordNotComplex` al crear el servidor SQL | Azure SQL exige una contraseña compleja: mayúsculas, minúsculas, números y símbolos, y que no contenga el nombre de usuario | Usar una contraseña que cumpla las reglas. El Bicep pide además un mínimo de 12 caracteres, y se evitan `;` `{` `}` para no romper la cadena de conexión |
 | `ProvisioningDisabled` al crear la base de datos gratuita | La oferta gratuita de Azure SQL no está disponible en Spain Central para la suscripción de prueba | Comprobarlo con la API de capacidades de SQL y mover solo SQL a **France Central** (parámetro `ubicacionSql`). Ver [Decisiones técnicas](#1-azure-sql-en-france-central-y-el-resto-en-spain-central) |
 | `ConnectionStringParseError: "connection timeout" is not a recognized keyword` | El driver `mssql-python` solo admite una lista cerrada de palabras clave en la cadena de conexión | Quitar `Connection Timeout` de la cadena y pasar el tiempo de espera en el código: `connect(..., timeout=60)` |
 | Host vacío al leer la URL de la Function con Azure CLI | En Flex Consumption, `az functionapp show --query defaultHostName` devuelve vacío | Leer `properties.defaultHostName`. Los scripts `ejecutar_manual` y la salida `hostFunction` del Bicep ya lo hacen así |
+| El what-if quería **borrar** la etiqueta `hidden-link: /app-insights-resource-id` de la Function App | El portal añade esa etiqueta por su cuenta para enlazar la Function con Application Insights. Como el Bicep no la declaraba, cada despliegue la habría quitado | Declararla en el Bicep junto a las etiquetas comunes: `tags: union(etiquetas, { 'hidden-link: /app-insights-resource-id': appInsights.id })` |
+| GitHub (rol Contributor sobre el grupo) no podía desplegar `infra/main.bicep` | `main.bicep` es un despliegue de **suscripción** (crea el grupo de recursos), y GitHub solo tiene permisos **dentro** del grupo | GitHub despliega directamente `infra/modulos/recursos.bicep` con `az deployment group create`. El módulo calcula él mismo el sufijo y las etiquetas, así que los nombres son idénticos se despliegue de una forma u otra. Ver [`docs/cicd_oidc.md`](docs/cicd_oidc.md) |
 | `AADSTS700213: No matching federated identity record found` al iniciar sesión desde GitHub Actions | GitHub envió el *subject* con **IDs inmutables** (`repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main`) y la credencial federada esperaba el formato clásico, sin IDs | Copiar el *subject* exacto del mensaje de error y crear una segunda credencial federada (escenario *Other issuer*) con ese valor: `scripts/credencial_federada_ids.json`. Después, *Re-run failed jobs*. Ver [`docs/cicd_oidc.md`](docs/cicd_oidc.md#aadsts700213-el-subject-con-ids-inmutables) |
 | La alerta no habría visto los fallos de `pipeline_manual` | La función capturaba el error y devolvía un 500 "controlado". Para Azure, la ejecución terminaba bien, así que no contaba en la métrica `requests/failed` | Registrar el error con `logging.exception` y **volver a lanzarlo** (`raise`), igual que `pipeline_mensual`. Comprobado con el fallo de prueba `PRUEBA_ALERTA=1`. Ver [`docs/alertas.md`](docs/alertas.md#cambio-en-pipeline_manual) |
 | El what-if no mostraba `identity.type: SystemAssigned` en la Function App | El what-if no siempre enseña todos los cambios de un recurso: es una vista previa, no una garantía | Desplegar igualmente y **comprobar el resultado real** con `az functionapp identity show -g rg-agroeco-dev -n <function> --query type -o tsv` (devuelve `SystemAssigned`). Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-pasos-en-este-orden) |
 | `CREATE USER ... FROM EXTERNAL PROVIDER` no funciona conectado con el usuario SQL | SQL busca la identidad en Microsoft Entra ID **en nombre de quien ejecuta el comando**. Con el usuario SQL (usuario y contraseña) no hay ninguna identidad de Entra con la que buscarla | En el Query editor, entrar con **Microsoft Entra authentication** (*Continue as ...*) como administrador de Entra del servidor, y ejecutar ahí `sql/03_usuario_identidad.sql` |
+
+## 🔮 Posibles mejoras
+
+| Mejora | Qué aporta | Qué exige | Coste |
+|---|---|---|---|
+| **Storage con identidad administrada** | La Function deja de usar la clave de la Storage Account: ya no queda **ningún secreto** en su configuración | **Asignaciones de roles** para la identidad (*Storage Blob Data Owner*, *Storage Queue Data Contributor*, *Storage Table Data Contributor*). GitHub necesitaría además *Role Based Access Control Administrator* con una condición que solo le deje asignar esos roles | 0 € |
+| **Cerrar la red de SQL con un *private endpoint*** | Quitar la regla `AllowAllWindowsAzureIps`: SQL solo sería accesible desde la red virtual del proyecto | Integración de la Function con una red virtual, un *private endpoint* para SQL y una zona DNS privada. Un *service endpoint* (gratis) no sirve, porque exige la misma región y aquí son Spain Central y France Central | **Unos 7 €/mes** |
+| **Activar *Microsoft Entra authentication only*** | Desactiva del todo el usuario SQL con contraseña: solo se entra con identidades de Entra | Hacerlo cuando todo funcione con Entra. Dejarían de funcionar la opción B del `.env` y el inicio de sesión con usuario SQL del Query editor | 0 € |
 
 ## 📁 Estructura del proyecto
 
@@ -355,7 +372,8 @@ Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-se-puede-quitar-la-regla-de
 ├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credenciales federadas (.json)
 ├── notebooks/        # Consultas contra Azure SQL
 ├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, alertas.md, identidad_sql.md, capturas/
-├── .env.example
+├── .env.example      # Plantilla del .env para ejecutar en local (sin valores reales)
+├── requirements-local.txt  # Dependencias para tu ordenador (pipeline y notebook)
 └── README.md
 ```
 
@@ -369,7 +387,7 @@ Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-se-puede-quitar-la-regla-de
 
 ![Alertas del presupuesto](docs/capturas/00_Captura.02.png)
 
-**Grupo de recursos.** Los 8 recursos que crea el Bicep: todo en Spain Central salvo el servidor y la base de datos SQL, que están en France Central.
+**Grupo de recursos.** Los recursos de la Fase 1 que crea el Bicep: todo en Spain Central salvo el servidor y la base de datos SQL, que están en France Central.
 
 ![Grupo de recursos](docs/capturas/01_grupo_recursos.png)
 
@@ -413,7 +431,7 @@ Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-se-puede-quitar-la-regla-de
 
 ![Inicio de sesión OIDC en GitHub Actions](docs/capturas/09b_github_actions_login.png)
 
-**Secretos de GitHub Actions.** Los 4 secretos que usa el workflow. GitHub nunca vuelve a mostrar su valor, solo el nombre.
+**Secretos de GitHub Actions.** Los 4 secretos obligatorios del workflow (los opcionales `ALERTAS_CORREO` y `SQL_ADMIN_ENTRA_ID` se añadieron después, en la Fase 3). GitHub nunca vuelve a mostrar su valor, solo el nombre.
 
 ![Secretos de GitHub](docs/capturas/10_github_secretos.png)
 

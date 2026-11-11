@@ -8,29 +8,45 @@ Todos los recursos están en el grupo `rg-agroeco-dev`, pero en **dos regiones**
 "Decisiones técnicas").
 
 ```
-                    ┌─────────────── Spain Central ───────────────────────────────────────────┐
-                    │                                                                          │
- ┌──────────────┐   │  ┌────────────────────────────────┐      ┌─────────────────────────────┐ │
- │ Temporizador │───┼─>│ Function App (Flex Consumption) │      │ Storage Account             │ │
- │ día 1, 06:00 │   │  │ func-agroeco-dev-XXXXX          │      │ stagroecodevXXXXX           │ │
- └──────────────┘   │  │                                 │ 2 ──>│  raw/AAAA-MM-DD/*.tsv       │ │
- ┌──────────────┐   │  │  pipeline_mensual (timer)       │ 4 ──>│  processed/AAAA-MM-DD/*.csv │ │
- │ Petición POST│───┼─>│  pipeline_manual  (HTTP)        │      │  despliegue/ (código)       │ │
- │ (pruebas)    │   │  │                                 │      └─────────────────────────────┘ │
- └──────────────┘   │  │  src/pipeline.py                │                                      │
- ┌──────────────┐ 1 │  │   1. descarga.py                │      ┌─────────────────────────────┐ │
- │ API Eurostat │<──┼──│   3. limpieza.py                │ logs │ Application Insights        │ │
- └──────────────┘   │  │   5. carga_sql.py               │ ────>│ appi-agroeco-dev            │ │
-                    │  └───────────────┬─────────────────┘      │  → log-agroeco-dev          │ │
-                    │                  │                        └─────────────────────────────┘ │
-                    └──────────────────┼───────────────────────────────────────────────────────┘
-                                       │ 5  (conexión cifrada, puerto 1433)
-                    ┌──────────────────┼────── France Central ──────┐
-                    │                  v                             │
-                    │  ┌────────────────────────────────────────┐   │
+                    ┌────────────────────────────────────────── GitHub ───────────────────────────┐
+                    │ git push (main) ──> GitHub Actions (.github/workflows/desplegar.yml)        │
+                    │   1. comprobar ──> 2. infraestructura (Bicep) ──> 3. código (.zip)          │
+                    └──────────────────┬──────────────────────────────────────────────────────────┘
+                                       │ OIDC: token de ~1 h, sin contraseña guardada
+                                       │ rol Contributor solo sobre rg-agroeco-dev
+                                       │ despliega la infraestructura y el código
+                    ┌──────────────────┼──────────────────── Spain Central ───────────────────────┐
+                    │                  v                                                          │
+ ┌──────────────┐   │  ┌───────────────┴─────────────────┐      ┌─────────────────────────────┐   │
+ │ Temporizador │───┼─>│ Function App (Flex Consumption) │      │ Storage Account             │   │
+ │ día 1, 06:00 │   │  │ func-agroeco-dev-XXXXX          │ 2 ──>│  raw/AAAA-MM-DD/*.tsv       │   │
+ └──────────────┘   │  │ identidad administrada          │ 4 ──>│  processed/AAAA-MM-DD/*.csv │   │
+ ┌──────────────┐   │  │                                 │      │  despliegue/ (código)       │   │
+ │ Petición POST│───┼─>│  pipeline_mensual (timer)       │      └─────────────────────────────┘   │
+ │ (pruebas)    │   │  │  pipeline_manual  (HTTP)        │                                        │
+ └──────────────┘   │  │                                 │                                        │
+                    │  │  src/pipeline.py                │      ┌─────────────────────────────┐   │
+ ┌──────────────┐ 1 │  │   1. descarga.py                │ logs │ Application Insights        │   │
+ │ API Eurostat │<──┼──│   3. limpieza.py                │────> │ appi-agroeco-dev            │   │
+ └──────────────┘   │  │   5. carga_sql.py               │      │  → log-agroeco-dev          │   │
+                    │  └───────────────┬─────────────────┘      └──────────────┬──────────────┘   │
+                    │                  │                   requests/failed > 0 │                  │
+                    │                  │                                       v                  │
+                    │                  │                        ┌──────────────┴──────────────┐   │
+                    │                  │                        │ Alerta de métrica (global)  │   │
+                    │                  │                        │ alerta-fallos-agroeco-dev   │   │
+                    │                  │                        │  → ag-agroeco-dev → correo  │   │
+                    │                  │                        └─────────────────────────────┘   │
+                    └──────────────────┼──────────────────────────────────────────────────────────┘
+                                       │ 5  identidad administrada: token de Entra ID, sin contraseña
+                                       │    (conexión cifrada, puerto 1433)
+                    ┌──────────────────┼──── France Central ────────┐
+                    │                  v                            │
+                    │  ┌───────────────┴────────────────────────┐   │
                     │  │ Azure SQL Database (oferta gratuita)   │   │
                     │  │ sql-agroeco-dev-XXXXX / sqldb-agroeco  │   │
                     │  │ modelo en estrella (6 tablas + vista)  │   │
+                    │  │ usuario de la identidad: permisos mín. │   │
                     │  └───────────────────┬────────────────────┘   │
                     └──────────────────────┼────────────────────────┘
                                            v
@@ -41,7 +57,15 @@ Todos los recursos están en el grupo `rg-agroeco-dev`, pero en **dos regiones**
 2. Guarda los TSV originales en `raw/` (una carpeta por fecha → histórico).
 3. Los limpia con pandas (mismo código que el proyecto original).
 4. Guarda las 6 tablas limpias en CSV en `processed/`.
-5. Borra y vuelve a crear el esquema en Azure SQL y carga las tablas, todo en una transacción.
+5. Borra y vuelve a crear el esquema en Azure SQL y carga las tablas, todo en una transacción. Entra con su
+   **identidad administrada**: un token de Microsoft Entra ID, sin contraseña ([`identidad_sql.md`](identidad_sql.md)).
+
+Alrededor del pipeline:
+
+- **Despliegue:** cada `push` a `main` lanza GitHub Actions, que entra en Azure con **OIDC** (sin contraseña
+  guardada) y despliega el Bicep y el código ([`cicd_oidc.md`](cicd_oidc.md)).
+- **Vigilancia:** si una ejecución falla, la **alerta de métrica** `requests/failed > 0` de Application Insights
+  envía un correo a través del Action Group ([`alertas.md`](alertas.md)).
 
 ## 🏷️ Convención de nombres
 
