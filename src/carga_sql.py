@@ -18,6 +18,18 @@ Qué cambia respecto al original:
     - La base de datos gratuita se pausa sola tras 15 minutos sin uso. La
       primera conexión la "despierta" y puede fallar mientras arranca, por
       eso se reintenta varias veces.
+
+Cómo se autentica (Fase 3B): lo decide la palabra clave "Authentication" de
+la cadena de conexión. El código es el mismo en Azure y en local:
+
+    En Azure (la pone el Bicep):  Authentication=ActiveDirectoryMSI
+        -> identidad administrada de la Function. Sin contraseña.
+    En local (.env), una de estas:
+        Authentication=ActiveDirectoryDefault  -> tu sesión de "az login"
+        UID=...;PWD=...                        -> usuario SQL (acceso de emergencia)
+
+Para ActiveDirectoryMSI y ActiveDirectoryDefault, mssql-python pide el token
+con la librería azure-identity (está en function_app/requirements.txt).
 """
 
 import logging
@@ -36,8 +48,21 @@ ESPERA_SEGUNDOS = 30
 TIEMPO_ESPERA_CONEXION = 60   # segundos máximos por cada intento de conexión
 
 
+def metodo_autenticacion(cadena_conexion: str) -> str:
+    """Dice, en palabras, cómo se va a autenticar la conexión (para el log; nunca muestra secretos)."""
+    texto = cadena_conexion.lower().replace(" ", "")
+    if "authentication=activedirectorymsi" in texto:
+        return "identidad administrada (sin contraseña)"
+    if "authentication=activedirectorydefault" in texto:
+        return "Microsoft Entra ID con tu sesión de az login"
+    if "pwd=" in texto:
+        return "usuario y contraseña de SQL"
+    return "otro método (ver la cadena de conexión)"
+
+
 def conectar(cadena_conexion: str) -> mssql_python.Connection:
     """Abre la conexión con Azure SQL, reintentando si la base de datos está en pausa."""
+    log.info(f"     Conectando a Azure SQL con {metodo_autenticacion(cadena_conexion)}")
     for intento in range(1, INTENTOS_CONEXION + 1):
         try:
             # El tiempo de espera va como parámetro: mssql-python no admite
@@ -45,7 +70,9 @@ def conectar(cadena_conexion: str) -> mssql_python.Connection:
             return mssql_python.connect(cadena_conexion, autocommit=False,
                                         timeout=TIEMPO_ESPERA_CONEXION)
         except mssql_python.Error as error:
-            if intento == INTENTOS_CONEXION:
+            # Si no se pudo conseguir el token de Entra (identidad o az login), reintentar
+            # no sirve de nada: es un problema de configuración, no de la base de datos.
+            if intento == INTENTOS_CONEXION or "access token" in str(error).lower():
                 raise
             log.warning(f"     No se pudo conectar (intento {intento}/{INTENTOS_CONEXION}). "
                         f"Puede que la base de datos esté reanudándose. Reintento en {ESPERA_SEGUNDOS} s. "

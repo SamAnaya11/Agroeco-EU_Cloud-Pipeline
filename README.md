@@ -16,7 +16,7 @@ descarga los datos, los guarda, los limpia y los carga en una base de datos en l
 | 1 | Infraestructura con Bicep + Function mensual y manual + carga en Azure SQL | ✅ Completada |
 | 2 | Despliegue automático con GitHub Actions (OIDC) | ✅ Completada |
 | 3A | Alerta por correo si falla la Function (Azure Monitor) | ✅ Completada |
-| 3B | Seguridad: identidad administrada / Key Vault | 🔜 Opcional |
+| 3B | Seguridad: la Function entra en Azure SQL con identidad administrada (sin contraseña) | ✅ Completada |
 
 **Primera ejecución en Azure (09/11/2026):** 28 países, 17 cultivos, 13.529 filas de superficie, 620 de % SAU,
 2.015 de operadores y 1.395 de ganadería. Son las mismas cifras que el proyecto original.
@@ -56,6 +56,7 @@ Diagrama detallado, regiones y convención de nombres: [`docs/arquitectura.md`](
 | **Azure SQL Database** (oferta gratuita, serverless) | **France Central** | Modelo en estrella y consultas | Gratis para siempre (100.000 vCore·s y 32 GB al mes) y habla T-SQL |
 | **Application Insights** + Log Analytics | Spain Central | Logs y errores de la Function | Integrado con Functions; 5 GB/mes gratis |
 | **Azure Monitor** (alerta de métrica + Action Group) | Global | Correo si falla la Function | Alerta de métrica: 10 series temporales gratis al mes; 1.000 correos gratis al mes |
+| **Microsoft Entra ID** (identidad administrada + administrador de Entra en SQL) | Global | La Function entra en SQL sin contraseña | Gratis |
 | **Cost Management** (presupuesto) | Suscripción | Aviso por correo si el gasto pasa de 5 € | Gratis |
 
 ## 🚀 Despliegue paso a paso
@@ -84,11 +85,16 @@ $MiIp = Invoke-RestMethod https://api.ipify.org     # tu IP pública, para el fi
 ```
 
 **4. Desplegar** la infraestructura y el código (unos 10 minutos). Azure CLI te pide la contraseña del
-administrador SQL, que no se guarda en ningún archivo:
+administrador SQL, que no se guarda en ningún archivo. El script te nombra además **administrador de Microsoft
+Entra** del servidor SQL (lee tu usuario de `az login`):
 
 ```powershell
 .\scripts\desplegar.ps1 -IpCliente $MiIp
 ```
+
+**4b. Solo la primera vez: crear el usuario de la Function en SQL.** En el Query editor, con *Microsoft Entra
+authentication*, ejecuta `sql/03_usuario_identidad.sql` (ver [`docs/identidad_sql.md`](docs/identidad_sql.md)).
+Sin este paso, la Function no puede entrar en la base de datos.
 
 Si solo cambias código de Python, basta con `.\scripts\desplegar.ps1 -SoloCodigo`.
 
@@ -159,6 +165,7 @@ que GitHub firma para **este repositorio y la rama `main`**, y GitHub solo tiene
 | `AZURE_SUBSCRIPTION_ID` | ID de la suscripción | `az account show --query id -o tsv` |
 | `SQL_ADMIN_PASSWORD` | Contraseña del administrador SQL | La que usaste en `desplegar.ps1` |
 | `ALERTAS_CORREO` *(opcional)* | Correo que recibe la alerta si falla la Function | El tuyo. Sin este secreto, el workflow no crea ni borra la alerta |
+| `SQL_ADMIN_ENTRA_ID` *(opcional)* | Object ID de tu usuario (administrador de Entra del servidor SQL) | `az ad signed-in-user show --query id -o tsv`. Sin este secreto, el workflow no toca el administrador que ya existe |
 
 **Coste:** 0 €. GitHub Actions es gratis en repositorios públicos.
 
@@ -180,6 +187,34 @@ Si `pipeline_mensual` o `pipeline_manual` fallan, llega un **correo** en unos 5-
 
 Detalles, permisos y cómo probarla paso a paso: [`docs/alertas.md`](docs/alertas.md).
 
+## 🪪 Azure SQL sin contraseña (identidad administrada)
+
+La Function entra en Azure SQL con su **identidad administrada**, no con el usuario y la contraseña del
+administrador:
+
+```
+ Function App ──token de Entra ID (~1 h)──> Azure SQL ──> usuario [func-agroeco-dev-XXXXX] con permisos mínimos
+ SQL_CADENA_CONEXION = ...;Authentication=ActiveDirectoryMSI;...        (sin UID ni PWD)
+```
+
+- **Bicep:** identidad *system-assigned* en la Function App y tu usuario como **administrador de Microsoft
+  Entra** del servidor SQL.
+- **Base de datos:** un usuario para la identidad (`sql/03_usuario_identidad.sql`), con solo `CREATE TABLE`,
+  `CREATE VIEW` y `ALTER`, `REFERENCES`, `INSERT`, `SELECT` sobre el esquema `dbo`. Ya no es el administrador.
+- **Sin asignaciones de roles:** los permisos se dan con T-SQL, así que GitHub sigue teniendo solo *Contributor*.
+- **En local:** `Authentication=ActiveDirectoryDefault` (tu `az login`) o, como acceso de emergencia, el
+  usuario SQL (ver `.env.example`).
+- **Coste:** 0 €.
+- El usuario SQL con contraseña **se mantiene** como acceso de emergencia, y la regla `AllowAllWindowsAzureIps`
+  también: la Function no tiene IP fija, y la red virtual con *service endpoint* exige que la Function y SQL
+  estén en la misma región.
+
+Probada el 11/11/2026: `ejecutar_manual.ps1` cargó las mismas filas (28 / 17 / 13.529 / 620 / 2.015 / 1.395)
+con la identidad administrada. Ver [Capturas](#-capturas).
+
+Limitaciones con una cuenta personal, pasos, plan B y errores típicos:
+[`docs/identidad_sql.md`](docs/identidad_sql.md).
+
 ## 💶 Costes estimados
 
 | Recurso | Coste mensual estimado |
@@ -190,6 +225,7 @@ Detalles, permisos y cómo probarla paso a paso: [`docs/alertas.md`](docs/alerta
 | Application Insights / Log Analytics | 0 € (tope de 0,1 GB/día) |
 | Tráfico Spain Central → France Central (~2 MB) | ≈ 0 € |
 | Alerta de fallos (métrica, 1 serie temporal) + correos | 0 € (dentro de la cuota gratuita) |
+| Identidad administrada + administrador de Entra en SQL | 0 € |
 | **Total** | **≈ 0 €** (céntimos) |
 
 ## 🗑️ Borrarlo todo
@@ -269,8 +305,9 @@ si algo falla, se deshace y la base de datos conserva los datos del mes anterior
 
 ### 6. Secretos y seguridad
 
-**Secretos fuera del repositorio.** La contraseña de SQL la pide Azure CLI al desplegar y solo se guarda en
-la configuración de la Function App. `.env`, `local.settings.json` y los parámetros locales están en `.gitignore`.
+**Secretos fuera del repositorio.** La contraseña de SQL la pide Azure CLI al desplegar y solo la usa el
+servidor SQL. Desde la Fase 3B, la Function ya **no** la tiene: entra con su identidad administrada.
+`.env`, `local.settings.json` y los parámetros locales están en `.gitignore`.
 
 **Firewall de SQL: regla `AllowAllWindowsAzureIps` (0.0.0.0).** Una Function App en Flex Consumption no
 tiene una IP fija, así que no se puede abrir el firewall solo para ella. La regla especial `0.0.0.0` equivale a la
@@ -284,10 +321,15 @@ opción del portal *"Allow Azure services and resources to access this server"*:
 | 🌐 Desde Internet | Bloqueado, salvo la IP que se pasa con `-IpCliente` (regla `ip-cliente`) |
 
 Es una configuración aceptable para un proyecto de pruebas con datos públicos, pero no la ideal. En la
-**Fase 3** se endurecerá con **identidad administrada**: la Function se autenticará en SQL con su propia
-identidad de Microsoft Entra ID, sin contraseña, y el usuario SQL podrá desactivarse. Cerrar también la red (quitar
-la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*, que **sí tiene coste**
-(unos 7 €/mes), así que se documentará como mejora opcional.
+**Fase 3B**, la Function pasa a autenticarse con su **identidad administrada**, así que la contraseña del
+administrador ya no está en su configuración. La regla 0.0.0.0 **se mantiene**, porque la identidad cambia
+*cómo* se entra, no *desde dónde*:
+
+- un *service endpoint* (gratis) exige que la red virtual y SQL estén en la misma región, y aquí son Spain Central
+  y France Central;
+- un *private endpoint* **sí tiene coste** (unos 7 €/mes), así que queda como mejora opcional.
+
+Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-se-puede-quitar-la-regla-de-firewall-allowallwindowsazureips).
 
 ## 🧩 Problemas encontrados y cómo se resolvieron
 
@@ -299,6 +341,8 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 | Host vacío al leer la URL de la Function con Azure CLI | En Flex Consumption, `az functionapp show --query defaultHostName` devuelve vacío | Leer `properties.defaultHostName`. Los scripts `ejecutar_manual` y la salida `hostFunction` del Bicep ya lo hacen así |
 | `AADSTS700213: No matching federated identity record found` al iniciar sesión desde GitHub Actions | GitHub envió el *subject* con **IDs inmutables** (`repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main`) y la credencial federada esperaba el formato clásico, sin IDs | Copiar el *subject* exacto del mensaje de error y crear una segunda credencial federada (escenario *Other issuer*) con ese valor: `scripts/credencial_federada_ids.json`. Después, *Re-run failed jobs*. Ver [`docs/cicd_oidc.md`](docs/cicd_oidc.md#aadsts700213-el-subject-con-ids-inmutables) |
 | La alerta no habría visto los fallos de `pipeline_manual` | La función capturaba el error y devolvía un 500 "controlado". Para Azure, la ejecución terminaba bien, así que no contaba en la métrica `requests/failed` | Registrar el error con `logging.exception` y **volver a lanzarlo** (`raise`), igual que `pipeline_mensual`. Comprobado con el fallo de prueba `PRUEBA_ALERTA=1`. Ver [`docs/alertas.md`](docs/alertas.md#cambio-en-pipeline_manual) |
+| El what-if no mostraba `identity.type: SystemAssigned` en la Function App | El what-if no siempre enseña todos los cambios de un recurso: es una vista previa, no una garantía | Desplegar igualmente y **comprobar el resultado real** con `az functionapp identity show -g rg-agroeco-dev -n <function> --query type -o tsv` (devuelve `SystemAssigned`). Ver [`docs/identidad_sql.md`](docs/identidad_sql.md#-pasos-en-este-orden) |
+| `CREATE USER ... FROM EXTERNAL PROVIDER` no funciona conectado con el usuario SQL | SQL busca la identidad en Microsoft Entra ID **en nombre de quien ejecuta el comando**. Con el usuario SQL (usuario y contraseña) no hay ninguna identidad de Entra con la que buscarla | En el Query editor, entrar con **Microsoft Entra authentication** (*Continue as ...*) como administrador de Entra del servidor, y ejecutar ahí `sql/03_usuario_identidad.sql` |
 
 ## 📁 Estructura del proyecto
 
@@ -307,10 +351,10 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 ├── infra/            # Bicep: main.bicep, modulos/recursos.bicep, presupuesto.bicep, parámetros de ejemplo
 ├── function_app/     # Azure Function (timer + HTTP), host.json, requirements.txt
 ├── src/              # Descarga, limpieza, almacenamiento, carga SQL y orquestador
-├── sql/              # Esquema y 10 consultas en T-SQL
+├── sql/              # Esquema, 10 consultas en T-SQL y usuario de la identidad administrada
 ├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credenciales federadas (.json)
 ├── notebooks/        # Consultas contra Azure SQL
-├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, alertas.md, capturas/
+├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, alertas.md, identidad_sql.md, capturas/
 ├── .env.example
 └── README.md
 ```
@@ -388,6 +432,18 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 **Correo de la alerta.** El fallo de prueba (`PRUEBA_ALERTA=1`) hizo saltar la alerta: *Monitor condition: Fired* y *Metric value: 1*. Los identificadores de la alerta están tapados.
 
 ![Correo de la alerta disparada](docs/capturas/13_alerta_correo.png)
+
+**Identidad administrada de la Function.** *Identity → System assigned* con *Status: On*: Azure ha creado una identidad de Microsoft Entra para `func-agroeco-dev-udq2s`, sin contraseña que guardar. El *Object ID* está tapado.
+
+![Identidad administrada de la Function App](docs/capturas/14_identidad_function.png)
+
+**Administrador de Entra del servidor SQL.** El servidor tiene como administrador de Microsoft Entra a `admin-entra-agroeco` (tu usuario), creado por el Bicep. El usuario SQL con contraseña sigue activo como acceso de emergencia (*Entra authentication only* sin marcar).
+
+![Administrador de Microsoft Entra en el servidor SQL](docs/capturas/15_sql_entra_admin.png)
+
+**Usuario de la identidad en la base de datos.** En el Query editor con Microsoft Entra authentication: `func-agroeco-dev-udq2s` es un `EXTERNAL_USER` con 7 permisos (`CONNECT` y los 6 mínimos que necesita el pipeline).
+
+![Usuario de la identidad administrada en Azure SQL](docs/capturas/15b_sql_usuario_identidad.png)
 
 ## 👤 Autor
 

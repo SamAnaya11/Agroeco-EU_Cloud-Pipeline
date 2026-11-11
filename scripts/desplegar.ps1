@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     Pasos:
-      1. Comprueba que has iniciado sesión con Azure CLI.
+      1. Comprueba que has iniciado sesión con Azure CLI y lee el Object ID de tu
+         usuario de Microsoft Entra (será el administrador de Entra del servidor SQL).
       2. Registra los proveedores de recursos necesarios (gratis, solo la primera vez).
       3. Despliega infra/main.bicep a nivel de suscripción.
          Azure CLI te pedirá la contraseña del administrador SQL (no se guarda en ningún archivo).
@@ -67,6 +68,14 @@ $Suscripcion = az account show --query name -o tsv
 if ($LASTEXITCODE -ne 0) { throw "No has iniciado sesión. Ejecuta: az login" }
 Write-Host "     Suscripción activa: $Suscripcion"
 
+# Object ID de tu usuario: administrador de Microsoft Entra del servidor SQL (Fase 3B).
+# Solo se guarda en una variable de esta ejecución; no se escribe en ningún archivo ni se muestra.
+if (-not $SoloCodigo) {
+    $AdminEntraId = az ad signed-in-user show --query id -o tsv
+    Comprobar "leer tu usuario de Microsoft Entra (az ad signed-in-user show)"
+    Write-Host "     Administrador de Entra del servidor SQL: tu usuario"
+}
+
 if (-not $SoloCodigo) {
     # -----------------------------------------------------------------
     # 2. Proveedores de recursos (gratis; si ya están registrados no hace nada)
@@ -84,7 +93,8 @@ if (-not $SoloCodigo) {
     # 3. Infraestructura (Bicep)
     # -----------------------------------------------------------------
     $Argumentos = @("--name", $NombreDespliegue, "--location", $Ubicacion,
-                    "--template-file", $Plantilla, "--parameters", "@$Parametros")
+                    "--template-file", $Plantilla, "--parameters", "@$Parametros",
+                    "sqlAdminEntraId=$AdminEntraId")
     if ($IpCliente) { $Argumentos += "ipCliente=$IpCliente" }
     if ($CorreoAlertas) { $Argumentos += "correoAlertas=$CorreoAlertas" }
 

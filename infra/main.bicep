@@ -43,6 +43,9 @@ param sqlContrasenaAdmin string
 @description('Opcional: tu IP pública, para consultar la base de datos desde tu ordenador o el portal. Vacío = sin regla.')
 param ipCliente string = ''
 
+@description('Object ID de tu usuario de Microsoft Entra: administrador de Entra del servidor SQL. desplegar.ps1 lo lee de tu sesión de Azure CLI. Vacío = no se toca el administrador.')
+param sqlAdminEntraId string = ''
+
 @description('Opcional: correo que recibe las alertas si falla la Function. Vacío = sin alertas. NO se guarda en ningún archivo: se pasa al desplegar (-CorreoAlertas o secreto de GitHub).')
 @secure()
 param correoAlertas string = ''
@@ -72,6 +75,7 @@ module recursos 'modulos/recursos.bicep' = {
     sqlUsuarioAdmin: sqlUsuarioAdmin
     sqlContrasenaAdmin: sqlContrasenaAdmin
     ipCliente: ipCliente
+    sqlAdminEntraId: sqlAdminEntraId
     correoAlertas: correoAlertas
   }
 }

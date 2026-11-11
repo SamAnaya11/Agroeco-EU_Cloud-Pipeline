@@ -86,15 +86,23 @@ sql/*.sql                      ──>  sql/*.sql
 (*remote build*). Así `src/` existe una sola vez en el repositorio y lo pueden usar
 tanto la Function como las ejecuciones locales (`python -m src.pipeline`).
 
-## 🔐 Secretos (Fase 1)
+## 🔐 Secretos e identidades (Fase 3B)
 
-| Secreto | Dónde vive | Dónde NO está |
+| Secreto o identidad | Dónde vive | Dónde NO está |
 |---|---|---|
-| Contraseña del admin SQL | La pide Azure CLI al desplegar → configuración de la Function App | Repositorio, archivos de parámetros, historial de la consola |
+| Contraseña del admin SQL | La pide Azure CLI al desplegar → **solo** el servidor SQL (acceso de emergencia) | Repositorio, archivos de parámetros, historial de la consola **y, desde la Fase 3B, la Function App** |
+| Identidad administrada de la Function | Microsoft Entra ID (la crea y la borra Azure con la Function). Entra en SQL con un token de ~1 hora | No hay nada que guardar: no tiene contraseña |
+| Administrador de Entra del servidor SQL | Tu usuario. Su Object ID lo pasa `desplegar.ps1` (o el secreto `SQL_ADMIN_ENTRA_ID`) | Repositorio |
 | Clave de la Storage Account | La lee el Bicep (`listKeys()`) → configuración de la Function App | Repositorio |
 | Clave de la función HTTP | La genera Azure; se consulta con `az functionapp function keys list` | Repositorio |
 
-En la Fase 3 se sustituyen las cadenas de conexión por identidad administrada.
+```
+ Function App ──(identidad administrada: token)──> Azure SQL  [usuario func-agroeco-dev-XXXXX, permisos mínimos]
+ Function App ──(clave de la cuenta)─────────────> Storage    [sin cambios en la Fase 3B]
+```
+
+El Storage sigue con la clave de la cuenta. Pasarlo a identidad exigiría asignaciones de roles de Azure (RBAC);
+ver [`identidad_sql.md`](identidad_sql.md#-hacen-falta-asignaciones-de-roles).
 
 ## 🚚 Dos formas de desplegar (Fase 2)
 

@@ -42,6 +42,11 @@ echo ">>> 1. Comprobando la sesión de Azure CLI"
 az account show --query name -o tsv || { echo "Ejecuta antes: az login"; exit 1; }
 
 if [ "$SOLO_CODIGO" = false ]; then
+    # Object ID de tu usuario: administrador de Microsoft Entra del servidor SQL (Fase 3B).
+    # Solo vive en esta variable; no se escribe en ningún archivo ni se muestra.
+    ADMIN_ENTRA_ID="$(az ad signed-in-user show --query id -o tsv)"
+    echo "     Administrador de Entra del servidor SQL: tu usuario"
+
     echo ">>> 2. Registrando proveedores de recursos (gratis)"
     for proveedor in Microsoft.Storage Microsoft.Web Microsoft.Sql Microsoft.Insights Microsoft.OperationalInsights Microsoft.AlertsManagement; do
         echo "     $proveedor"
@@ -49,7 +54,8 @@ if [ "$SOLO_CODIGO" = false ]; then
     done
 
     ARGUMENTOS=(--name "$NOMBRE_DESPLIEGUE" --location "$UBICACION"
-                --template-file "$PLANTILLA" --parameters "@$PARAMETROS")
+                --template-file "$PLANTILLA" --parameters "@$PARAMETROS"
+                "sqlAdminEntraId=$ADMIN_ENTRA_ID")
     [ -n "$IP_CLIENTE" ] && ARGUMENTOS+=("ipCliente=$IP_CLIENTE")
     [ -n "$CORREO_ALERTAS" ] && ARGUMENTOS+=("correoAlertas=$CORREO_ALERTAS")
 

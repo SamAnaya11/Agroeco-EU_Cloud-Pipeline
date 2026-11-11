@@ -1,5 +1,6 @@
 # Dependencias de la Azure Function (Azure las instala al desplegar: "remote build")
 azure-functions>=1.20
 azure-storage-blob>=12.20
+azure-identity>=1.19  # tokens de Microsoft Entra: identidad administrada (Azure) o az login (local)
 pandas>=2.2,<3        # misma versión mayor que el proyecto original
 mssql-python>=1.17    # driver oficial de Microsoft para SQL Server / Azure SQL (incluye el driver ODBC)

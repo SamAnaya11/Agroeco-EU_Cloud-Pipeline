@@ -6,7 +6,9 @@
 //   2. Log Analytics      -> almacén de logs (lo usa Application Insights)
 //   3. Application Insights -> logs y monitorización de la Function
 //   4. Azure SQL          -> servidor lógico + base de datos (oferta gratuita)
+//                            + administrador de Microsoft Entra (Fase 3B)
 //   5. Function App       -> plan Flex Consumption + aplicación Python
+//                            + identidad administrada para entrar en SQL sin contraseña
 //   6. Alertas            -> correo si falla la Function (solo si se pasa correoAlertas)
 //
 // Coste: ver README, sección "Costes". Todo está configurado para el
@@ -36,6 +38,13 @@ param sqlUsuarioAdmin string
 @minLength(12)
 param sqlContrasenaAdmin string
 param ipCliente string = ''
+
+// ID de objeto (Object ID) de tu usuario de Microsoft Entra: será el administrador
+// de Entra del servidor SQL (el que puede crear el usuario de la identidad de la
+// Function). No es una contraseña, pero tampoco se guarda en el repositorio:
+// desplegar.ps1 lo lee de tu sesión de Azure CLI y GitHub lo toma del secreto
+// SQL_ADMIN_ENTRA_ID. Vacío = no se toca el administrador de Entra.
+param sqlAdminEntraId string = ''
 
 // Correo para las alertas. @secure() para que NO quede visible en el historial
 // de despliegues del portal. Vacío = no se crean (ni se borran) las alertas.
@@ -110,7 +119,8 @@ resource contenedorCodigo 'Microsoft.Storage/storageAccounts/blobServices/contai
 
 // Cadena de conexión construida con la clave de la cuenta.
 // Solo se guarda en la configuración de la Function App, nunca en el repositorio.
-// (Fase 3: se sustituirá por identidad administrada.)
+// (La Fase 3B solo quita la contraseña de SQL. Pasar el Storage a identidad
+// administrada exigiría asignaciones de roles: ver docs/identidad_sql.md.)
 var cadenaStorage = 'DefaultEndpointsProtocol=https;AccountName=${storage.name};AccountKey=${storage.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
 
 // =====================================================================
@@ -195,8 +205,26 @@ resource baseDatos 'Microsoft.Sql/servers/databases@2023-08-01' = {
   }
 }
 
-// Regla especial 0.0.0.0: permite conexiones desde servicios de Azure
-// (la Function App no tiene una IP fija). Fase 3 puede endurecer esto.
+// Administrador de Microsoft Entra del servidor (Fase 3B). Sin él, ninguna
+// identidad de Entra (ni tu usuario ni la de la Function) puede entrar en SQL.
+// Se mantiene también el usuario SQL con contraseña (sqlUsuarioAdmin) como
+// acceso de emergencia; la Function ya NO lo usa.
+// "login" es solo el nombre que se muestra; Azure identifica al usuario por "sid".
+resource adminEntra 'Microsoft.Sql/servers/administrators@2023-08-01' = if (!empty(sqlAdminEntraId)) {
+  parent: servidorSql
+  name: 'ActiveDirectory'
+  properties: {
+    administratorType: 'ActiveDirectory'
+    login: 'admin-entra-${prefijo}'
+    sid: sqlAdminEntraId
+    tenantId: tenant().tenantId
+  }
+}
+
+// Regla especial 0.0.0.0: permite conexiones desde servicios de Azure.
+// Se MANTIENE aunque la Function use identidad administrada: la identidad cambia
+// CÓMO se autentica, no DESDE DÓNDE se conecta, y la Function (Flex Consumption,
+// sin red virtual) no tiene una IP fija. Ver docs/identidad_sql.md.
 resource firewallAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01' = {
   parent: servidorSql
   name: 'AllowAllWindowsAzureIps'
@@ -216,11 +244,12 @@ resource firewallCliente 'Microsoft.Sql/servers/firewallRules@2023-08-01' = if (
   }
 }
 
-// Cadena de conexión para el driver mssql-python. Solo admite una lista cerrada de
-// palabras clave (Server, Database, UID, PWD, Encrypt, TrustServerCertificate...).
-// "Connection Timeout" NO es válida: el tiempo de espera se pasa en el código
-// (src/carga_sql.py -> mssql_python.connect(..., timeout=60)).
-var cadenaSql = 'Server=tcp:${servidorSql.properties.fullyQualifiedDomainName},1433;Database=${baseDatos.name};UID=${sqlUsuarioAdmin};PWD=${sqlContrasenaAdmin};Encrypt=yes;TrustServerCertificate=no;'
+// Cadena de conexión para el driver mssql-python, SIN usuario ni contraseña:
+// "Authentication=ActiveDirectoryMSI" hace que el driver pida un token a la
+// identidad administrada de la Function (con la librería azure-identity).
+// Solo admite una lista cerrada de palabras clave: "Connection Timeout" NO es
+// válida; el tiempo de espera se pasa en el código (src/carga_sql.py).
+var cadenaSql = 'Server=tcp:${servidorSql.properties.fullyQualifiedDomainName},1433;Database=${baseDatos.name};Authentication=ActiveDirectoryMSI;Encrypt=yes;TrustServerCertificate=no;'
 
 // =====================================================================
 // 5. Function App (Flex Consumption, Linux, Python)
@@ -250,6 +279,12 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     'hidden-link: /app-insights-resource-id': appInsights.id
   })
   kind: 'functionapp,linux'
+  // Identidad administrada asignada por el sistema (gratis): Azure crea una
+  // identidad de Microsoft Entra con el MISMO nombre que la Function App y la
+  // borra si se borra la Function. Con ella la Function entra en SQL sin contraseña.
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
@@ -295,7 +330,7 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
           value: cadenaStorage
         }
         {
-          name: 'SQL_CADENA_CONEXION'                     // lo lee src/pipeline.py
+          name: 'SQL_CADENA_CONEXION'                     // lo lee src/pipeline.py (sin contraseña)
           value: cadenaSql
         }
       ]

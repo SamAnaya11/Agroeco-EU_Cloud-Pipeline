@@ -22,6 +22,12 @@ from src.pipeline import ejecutar_pipeline
 
 app = func.FunctionApp()
 
+# Las librerías de Azure (Blob Storage, azure-identity) escriben cada petición
+# HTTP en el log. Solo se guardan sus avisos y errores: así los logs del
+# pipeline se leen mejor y se gasta menos cuota de Log Analytics.
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+logging.getLogger("azure.identity").setLevel(logging.WARNING)
+
 # Formato NCRONTAB (6 campos): {segundo} {minuto} {hora} {día} {mes} {día de la semana}
 # "0 0 6 1 * *" = el día 1 de cada mes a las 06:00 UTC (07:00/08:00 en España)
 HORARIO_MENSUAL = "0 0 6 1 * *"

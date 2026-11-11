@@ -61,6 +61,8 @@ Consecuencias:
 |---|---|---|
 | Desplegar `infra/modulos/recursos.bicep` | ✅ | Despliegue dentro del grupo (`az deployment group create`) |
 | Crear el Action Group y la alerta de fallos | ✅ | Son recursos `Microsoft.Insights` dentro del grupo (ver [`alertas.md`](alertas.md)) |
+| Activar la identidad administrada de la Function y poner el administrador de Entra del servidor SQL | ✅ | Son propiedades de recursos del grupo (ver [`identidad_sql.md`](identidad_sql.md)) |
+| Crear el usuario de la identidad dentro de la base de datos | ❌ | Es T-SQL, no Azure: se hace una vez a mano en el Query editor |
 | Subir el código de la Function | ✅ | Recurso dentro del grupo |
 | Desplegar `infra/main.bicep` (crea el grupo) | ❌ | Es un despliegue de **suscripción** |
 | Registrar proveedores de recursos | ❌ | Es una acción de **suscripción** (ya están registrados) |
@@ -77,9 +79,13 @@ Por eso el **primer despliegue** (el que crea el grupo de recursos) se hace desd
 
 Hoy el Bicep **no crea ninguna**, así que Contributor es suficiente.
 
-En la **Fase 3** (identidad administrada), el Bicep sí creará asignaciones de roles. Por ejemplo, dar a la
-Function permiso de lectura y escritura en el Storage. Para eso hace falta el permiso
-`Microsoft.Authorization/roleAssignments/write`, que **Contributor no tiene**. Opciones:
+La **Fase 3B** tampoco las necesita. La Function entra en SQL con su identidad administrada, pero sus permisos
+dentro de la base de datos se dan con **T-SQL** (`GRANT`), no con roles de Azure. El administrador de Entra del
+servidor es una propiedad del servidor, y Contributor puede cambiarla.
+
+Sí harían falta si en el futuro el **Storage** pasara a identidad administrada (roles *Storage Blob Data
+Owner*, etc.). Para eso hace falta el permiso `Microsoft.Authorization/roleAssignments/write`, que
+**Contributor no tiene**. Opciones:
 
 | Rol extra sobre el grupo | ¿Recomendado? |
 |---|---|
@@ -87,7 +93,7 @@ Function permiso de lectura y escritura en el Storage. Para eso hace falta el pe
 | User Access Administrator | ⚠️ Puede asignar cualquier rol, incluido Owner |
 | Owner | ❌ Demasiado amplio |
 
-Se añadirá en la Fase 3, solo si hace falta.
+Se añadiría solo si hace falta.
 
 ---
 

@@ -12,6 +12,7 @@
 # Secretos necesarios (Settings -> Secrets and variables -> Actions):
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, SQL_ADMIN_PASSWORD
 #   ALERTAS_CORREO (opcional: correo de la alerta si falla la Function)
+#   SQL_ADMIN_ENTRA_ID (opcional: Object ID del administrador de Entra del servidor SQL)
 # =====================================================================
 name: Desplegar en Azure
 
@@ -127,6 +128,7 @@ jobs:
         env:
           SQL_CONTRASENA: ${{ secrets.SQL_ADMIN_PASSWORD }}
           CORREO_ALERTAS: ${{ secrets.ALERTAS_CORREO }}   # si no existe el secreto, queda vacío
+          ADMIN_ENTRA_ID: ${{ secrets.SQL_ADMIN_ENTRA_ID }}  # vacío = no se toca el admin de Entra
         run: |
           az deployment group create \
             --name "$NOMBRE_DESPLIEGUE" \
@@ -134,6 +136,7 @@ jobs:
             --template-file infra/modulos/recursos.bicep \
             --parameters @infra/main.parameters.example.json \
             --parameters sqlContrasenaAdmin="$SQL_CONTRASENA" correoAlertas="$CORREO_ALERTAS" \
+                         sqlAdminEntraId="$ADMIN_ENTRA_ID" \
             --output none
           echo "[OK] Infraestructura desplegada"
 
