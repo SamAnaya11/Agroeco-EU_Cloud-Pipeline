@@ -1,6 +1,6 @@
 # ☁️ Agroeco EU Cloud Pipeline: agricultura ecológica en Azure
 
-Versión en la nube del proyecto [**Agricultura Ecológica en España (2012-2024)**]([URL_PROYECTO_1]):
+Versión en la nube del proyecto [**Agricultura Ecológica en España (2012-2024)**](https://github.com/SamAnaya11/EU-Agricultural-Data-Analysis):
 el mismo análisis con datos de **Eurostat**, pero ahora el pipeline funciona **solo en Azure**. Cada mes
 descarga los datos, los guarda, los limpia y los carga en una base de datos en la nube, **sin intervención manual**.
 
