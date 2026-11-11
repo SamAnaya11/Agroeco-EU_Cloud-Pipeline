@@ -43,6 +43,10 @@ param sqlContrasenaAdmin string
 @description('Opcional: tu IP pública, para consultar la base de datos desde tu ordenador o el portal. Vacío = sin regla.')
 param ipCliente string = ''
 
+@description('Opcional: correo que recibe las alertas si falla la Function. Vacío = sin alertas. NO se guarda en ningún archivo: se pasa al desplegar (-CorreoAlertas o secreto de GitHub).')
+@secure()
+param correoAlertas string = ''
+
 // El sufijo de 5 caracteres de los nombres únicos se calcula dentro del módulo
 // (modulos/recursos.bicep), para que GitHub Actions pueda desplegarlo solo.
 var etiquetas = {
@@ -68,6 +72,7 @@ module recursos 'modulos/recursos.bicep' = {
     sqlUsuarioAdmin: sqlUsuarioAdmin
     sqlContrasenaAdmin: sqlContrasenaAdmin
     ipCliente: ipCliente
+    correoAlertas: correoAlertas
   }
 }
 

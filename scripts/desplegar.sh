@@ -9,17 +9,20 @@
 #   ./scripts/desplegar.sh --vista-previa        # what-if, no crea nada
 #   ./scripts/desplegar.sh --solo-codigo         # solo sube el código
 #   ./scripts/desplegar.sh --ip 203.0.113.10     # añade tu IP al firewall SQL
+#   ./scripts/desplegar.sh --correo tu@correo.com  # crea la alerta si falla la Function
 # =====================================================================
 set -euo pipefail   # parar ante cualquier error
 
 VISTA_PREVIA=false
 SOLO_CODIGO=false
 IP_CLIENTE=""
+CORREO_ALERTAS=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --vista-previa) VISTA_PREVIA=true ;;
         --solo-codigo)  SOLO_CODIGO=true ;;
         --ip)           IP_CLIENTE="$2"; shift ;;
+        --correo)       CORREO_ALERTAS="$2"; shift ;;
         *) echo "Opción desconocida: $1"; exit 1 ;;
     esac
     shift
@@ -40,7 +43,7 @@ az account show --query name -o tsv || { echo "Ejecuta antes: az login"; exit 1;
 
 if [ "$SOLO_CODIGO" = false ]; then
     echo ">>> 2. Registrando proveedores de recursos (gratis)"
-    for proveedor in Microsoft.Storage Microsoft.Web Microsoft.Sql Microsoft.Insights Microsoft.OperationalInsights; do
+    for proveedor in Microsoft.Storage Microsoft.Web Microsoft.Sql Microsoft.Insights Microsoft.OperationalInsights Microsoft.AlertsManagement; do
         echo "     $proveedor"
         az provider register --namespace "$proveedor" --wait
     done
@@ -48,6 +51,7 @@ if [ "$SOLO_CODIGO" = false ]; then
     ARGUMENTOS=(--name "$NOMBRE_DESPLIEGUE" --location "$UBICACION"
                 --template-file "$PLANTILLA" --parameters "@$PARAMETROS")
     [ -n "$IP_CLIENTE" ] && ARGUMENTOS+=("ipCliente=$IP_CLIENTE")
+    [ -n "$CORREO_ALERTAS" ] && ARGUMENTOS+=("correoAlertas=$CORREO_ALERTAS")
 
     if [ "$VISTA_PREVIA" = true ]; then
         echo ">>> 3. Vista previa (what-if): NO se crea nada. Te pedirá la contraseña SQL."

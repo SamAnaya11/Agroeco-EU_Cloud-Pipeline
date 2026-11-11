@@ -20,16 +20,21 @@
 .PARAMETER IpCliente
     Tu IP pública. Crea una regla en el firewall de SQL para conectarte desde tu ordenador o el portal.
 
+.PARAMETER CorreoAlertas
+    Correo que recibe un aviso si falla la Function. Si no se pasa, no se crean
+    las alertas (y si ya existen, se mantienen como están).
+
 .EXAMPLE
     .\scripts\desplegar.ps1 -VistaPrevia
     .\scripts\desplegar.ps1
-    .\scripts\desplegar.ps1 -IpCliente 203.0.113.10
+    .\scripts\desplegar.ps1 -IpCliente 203.0.113.10 -CorreoAlertas tu@correo.com
     .\scripts\desplegar.ps1 -SoloCodigo
 #>
 param(
     [switch]$VistaPrevia,
     [switch]$SoloCodigo,
-    [string]$IpCliente = ""
+    [string]$IpCliente = "",
+    [string]$CorreoAlertas = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,7 +73,8 @@ if (-not $SoloCodigo) {
     # -----------------------------------------------------------------
     Write-Host "`n>>> 2. Registrando proveedores de recursos" -ForegroundColor Cyan
     foreach ($Proveedor in @("Microsoft.Storage", "Microsoft.Web", "Microsoft.Sql",
-                             "Microsoft.Insights", "Microsoft.OperationalInsights")) {
+                             "Microsoft.Insights", "Microsoft.OperationalInsights",
+                             "Microsoft.AlertsManagement")) {
         Write-Host "     $Proveedor"
         az provider register --namespace $Proveedor --wait
         Comprobar "registrar $Proveedor"
@@ -80,6 +86,7 @@ if (-not $SoloCodigo) {
     $Argumentos = @("--name", $NombreDespliegue, "--location", $Ubicacion,
                     "--template-file", $Plantilla, "--parameters", "@$Parametros")
     if ($IpCliente) { $Argumentos += "ipCliente=$IpCliente" }
+    if ($CorreoAlertas) { $Argumentos += "correoAlertas=$CorreoAlertas" }
 
     if ($VistaPrevia) {
         Write-Host "`n>>> 3. Vista previa (what-if): NO se crea nada" -ForegroundColor Cyan

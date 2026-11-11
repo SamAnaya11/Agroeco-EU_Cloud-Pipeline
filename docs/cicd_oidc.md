@@ -60,6 +60,7 @@ Consecuencias:
 | Tarea | ¿La hace GitHub? | Por qué |
 |---|---|---|
 | Desplegar `infra/modulos/recursos.bicep` | ✅ | Despliegue dentro del grupo (`az deployment group create`) |
+| Crear el Action Group y la alerta de fallos | ✅ | Son recursos `Microsoft.Insights` dentro del grupo (ver [`alertas.md`](alertas.md)) |
 | Subir el código de la Function | ✅ | Recurso dentro del grupo |
 | Desplegar `infra/main.bicep` (crea el grupo) | ❌ | Es un despliegue de **suscripción** |
 | Registrar proveedores de recursos | ❌ | Es una acción de **suscripción** (ya están registrados) |

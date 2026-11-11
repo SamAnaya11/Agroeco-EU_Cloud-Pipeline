@@ -14,6 +14,7 @@ Al desplegar, el script copia src/ y sql/ junto a este archivo, por eso
 
 import json
 import logging
+import os
 
 import azure.functions as func
 
@@ -43,12 +44,21 @@ def pipeline_manual(req: func.HttpRequest) -> func.HttpResponse:
     Ejecución manual. Necesita la clave de la función (auth_level=FUNCTION),
     así que nadie puede lanzarla sin ella.
     """
+    # Interruptor para PROBAR LA ALERTA (ver docs/alertas.md): con la variable
+    # PRUEBA_ALERTA=1 en la configuración de la Function App, falla a propósito.
+    # Solo afecta a la ejecución manual, nunca al temporizador.
+    if os.environ.get("PRUEBA_ALERTA") == "1":
+        raise RuntimeError("Fallo provocado a propósito para probar la alerta (PRUEBA_ALERTA=1)")
+
     try:
         resumen = ejecutar_pipeline()
-        return func.HttpResponse(json.dumps(resumen, ensure_ascii=False), status_code=200,
-                                 mimetype="application/json")
-    except Exception as error:
-        # El detalle completo queda en Application Insights; al cliente solo el tipo de error
+    except Exception:
+        # El detalle completo queda en Application Insights. Se vuelve a lanzar el
+        # error para que Azure marque la ejecución como FALLIDA (si se devolviera
+        # un 500 "controlado", la alerta de fallos no lo vería). El cliente recibe
+        # un 500 sin detalles.
         logging.exception("El pipeline ha fallado")
-        return func.HttpResponse(f"El pipeline ha fallado ({type(error).__name__}). "
-                                 "Revisa los logs en Application Insights.", status_code=500)
+        raise
+
+    return func.HttpResponse(json.dumps(resumen, ensure_ascii=False), status_code=200,
+                             mimetype="application/json")

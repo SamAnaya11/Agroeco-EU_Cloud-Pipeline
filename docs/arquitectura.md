@@ -64,6 +64,8 @@ Formato: **`<abreviatura>-<prefijo>-<entorno>[-<sufijo>]`**
 | Function App | `func-agroeco-dev-<sufijo>` | Sí |
 | Application Insights | `appi-agroeco-dev` | No |
 | Log Analytics | `log-agroeco-dev` | No |
+| Action Group (correo de alertas) | `ag-agroeco-dev` | No |
+| Alerta de métrica (fallos de la Function) | `alerta-fallos-agroeco-dev` | No |
 | Presupuesto (suscripción) | `presupuesto-agroeco` | No |
 
 Todos los recursos llevan las etiquetas `proyecto=agroeco`, `entorno=dev` y `gestionadoPor=bicep`.

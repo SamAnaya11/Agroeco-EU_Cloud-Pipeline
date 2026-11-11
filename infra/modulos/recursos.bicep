@@ -7,6 +7,7 @@
 //   3. Application Insights -> logs y monitorización de la Function
 //   4. Azure SQL          -> servidor lógico + base de datos (oferta gratuita)
 //   5. Function App       -> plan Flex Consumption + aplicación Python
+//   6. Alertas            -> correo si falla la Function (solo si se pasa correoAlertas)
 //
 // Coste: ver README, sección "Costes". Todo está configurado para el
 // mínimo coste posible.
@@ -36,6 +37,11 @@ param sqlUsuarioAdmin string
 param sqlContrasenaAdmin string
 param ipCliente string = ''
 
+// Correo para las alertas. @secure() para que NO quede visible en el historial
+// de despliegues del portal. Vacío = no se crean (ni se borran) las alertas.
+@secure()
+param correoAlertas string = ''
+
 // Sufijo de 5 caracteres, siempre el mismo para la misma suscripción
 // (solo en los nombres que deben ser únicos en todo Azure)
 var sufijo = take(uniqueString(subscription().id, prefijo, entorno), 5)
@@ -57,6 +63,8 @@ var nombreServidorSql = 'sql-${prefijo}-${entorno}-${sufijo}'   // único en Azu
 var nombreBaseDatos = 'sqldb-${prefijo}'
 var nombrePlan = 'asp-${prefijo}-${entorno}'
 var nombreFunctionApp = 'func-${prefijo}-${entorno}-${sufijo}'   // único en Azure
+var nombreGrupoAcciones = 'ag-${prefijo}-${entorno}'
+var nombreAlertaFallos = 'alerta-fallos-${prefijo}-${entorno}'
 
 var contenedorDespliegue = 'despliegue'   // aquí Flex Consumption guarda el paquete de código
 
@@ -292,6 +300,76 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
         }
       ]
     }
+  }
+}
+
+// =====================================================================
+// 6. Alertas: correo si falla pipeline_manual o pipeline_mensual
+// =====================================================================
+// Se crean solo si se pasa el parámetro correoAlertas.
+var crearAlertas = !empty(correoAlertas)
+
+// Action Group: A QUIÉN se avisa y cómo (aquí, un correo).
+// Coste: los primeros 1.000 correos al mes son gratis.
+resource grupoAcciones 'Microsoft.Insights/actionGroups@2023-01-01' = if (crearAlertas) {
+  name: nombreGrupoAcciones
+  location: 'global'
+  tags: etiquetas
+  properties: {
+    groupShortName: take(prefijo, 12)   // aparece en el asunto del correo (máx. 12 caracteres)
+    enabled: true
+    emailReceivers: [
+      {
+        name: 'correo-aviso'
+        emailAddress: correoAlertas
+        useCommonAlertSchema: true      // formato de correo estándar de Azure Monitor
+      }
+    ]
+  }
+}
+
+// Alerta de MÉTRICA sobre Application Insights: "Failed requests" (requests/failed).
+// Cada ejecución de la Function (temporizador o HTTP) se registra como una
+// "request"; si la función lanza un error, cuenta como fallida.
+// En este proyecto solo hay dos funciones, así que cualquier fallo es de
+// pipeline_manual o pipeline_mensual.
+//
+// Coste: 0 €. Una alerta de métrica sin dimensiones vigila 1 serie temporal y
+// Azure Monitor incluye 10 gratis al mes. (Una alerta de búsqueda en logs
+// costaría dinero cada mes según la frecuencia; por eso se usa esta.)
+resource alertaFallos 'Microsoft.Insights/metricAlerts@2018-03-01' = if (crearAlertas) {
+  name: nombreAlertaFallos
+  location: 'global'
+  tags: etiquetas
+  properties: {
+    description: 'Avisa por correo si falla una ejecución de pipeline_manual o pipeline_mensual.'
+    severity: 1                   // 0 = crítica ... 4 = informativa
+    enabled: true
+    scopes: [
+      appInsights.id
+    ]
+    evaluationFrequency: 'PT5M'   // se comprueba cada 5 minutos
+    windowSize: 'PT15M'           // mirando los últimos 15 minutos
+    autoMitigate: true            // se cierra sola cuando deja de haber fallos
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          name: 'ejecuciones-fallidas'
+          metricNamespace: 'microsoft.insights/components'
+          metricName: 'requests/failed'
+          timeAggregation: 'Count'
+          operator: 'GreaterThan'
+          threshold: 0            // con 1 fallo ya avisa
+        }
+      ]
+    }
+    actions: [
+      {
+        actionGroupId: grupoAcciones.id
+      }
+    ]
   }
 }
 

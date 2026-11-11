@@ -15,7 +15,8 @@ descarga los datos, los guarda, los limpia y los carga en una base de datos en l
 | 0 | Análisis del original, migración SQLite → T-SQL, presupuesto de 5 € | ✅ Completada |
 | 1 | Infraestructura con Bicep + Function mensual y manual + carga en Azure SQL | ✅ Completada |
 | 2 | Despliegue automático con GitHub Actions (OIDC) | ✅ Completada |
-| 3 | Seguridad (identidad administrada / Key Vault) y alerta si falla la Function | 🔜 Opcional |
+| 3A | Alerta por correo si falla la Function (Azure Monitor) | ✅ Completada |
+| 3B | Seguridad: identidad administrada / Key Vault | 🔜 Opcional |
 
 **Primera ejecución en Azure (09/11/2026):** 28 países, 17 cultivos, 13.529 filas de superficie, 620 de % SAU,
 2.015 de operadores y 1.395 de ganadería. Son las mismas cifras que el proyecto original.
@@ -54,6 +55,7 @@ Diagrama detallado, regiones y convención de nombres: [`docs/arquitectura.md`](
 | **Blob Storage** (Standard LRS) | Spain Central | Guarda los datos originales y limpios | La opción de almacenamiento más barata |
 | **Azure SQL Database** (oferta gratuita, serverless) | **France Central** | Modelo en estrella y consultas | Gratis para siempre (100.000 vCore·s y 32 GB al mes) y habla T-SQL |
 | **Application Insights** + Log Analytics | Spain Central | Logs y errores de la Function | Integrado con Functions; 5 GB/mes gratis |
+| **Azure Monitor** (alerta de métrica + Action Group) | Global | Correo si falla la Function | Alerta de métrica: 10 series temporales gratis al mes; 1.000 correos gratis al mes |
 | **Cost Management** (presupuesto) | Suscripción | Aviso por correo si el gasto pasa de 5 € | Gratis |
 
 ## 🚀 Despliegue paso a paso
@@ -156,8 +158,27 @@ que GitHub firma para **este repositorio y la rama `main`**, y GitHub solo tiene
 | `AZURE_TENANT_ID` | ID del directorio | `az account show --query tenantId -o tsv` |
 | `AZURE_SUBSCRIPTION_ID` | ID de la suscripción | `az account show --query id -o tsv` |
 | `SQL_ADMIN_PASSWORD` | Contraseña del administrador SQL | La que usaste en `desplegar.ps1` |
+| `ALERTAS_CORREO` *(opcional)* | Correo que recibe la alerta si falla la Function | El tuyo. Sin este secreto, el workflow no crea ni borra la alerta |
 
 **Coste:** 0 €. GitHub Actions es gratis en repositorios públicos.
+
+## 🚨 Alerta si falla la Function
+
+Si `pipeline_mensual` o `pipeline_manual` fallan, llega un **correo** en unos 5-10 minutos:
+
+```
+ Function falla ──> Application Insights ──> alerta-fallos-agroeco-dev ──> ag-agroeco-dev ──> 📧
+                    (request fallida)        "requests/failed > 0"         (Action Group)
+```
+
+- **Alerta de métrica**, no de logs: es **gratis** (1 serie temporal; Azure Monitor incluye 10 al mes) y los
+  primeros 1.000 correos al mes también.
+- El correo **no está en el repositorio**: se pasa al desplegar con `-CorreoAlertas` o con el secreto de
+  GitHub `ALERTAS_CORREO`. Sin correo, no se crea la alerta.
+- Se prueba con un **fallo controlado** (variable `PRUEBA_ALERTA=1`) que después se deshace. Probada el
+  10/11/2026: el correo *Fired: Sev1* llegó con `Metric value 1` (ver [Capturas](#-capturas)).
+
+Detalles, permisos y cómo probarla paso a paso: [`docs/alertas.md`](docs/alertas.md).
 
 ## 💶 Costes estimados
 
@@ -168,6 +189,7 @@ que GitHub firma para **este repositorio y la rama `main`**, y GitHub solo tiene
 | Storage Account (pocos MB) | < 0,01 € |
 | Application Insights / Log Analytics | 0 € (tope de 0,1 GB/día) |
 | Tráfico Spain Central → France Central (~2 MB) | ≈ 0 € |
+| Alerta de fallos (métrica, 1 serie temporal) + correos | 0 € (dentro de la cuota gratuita) |
 | **Total** | **≈ 0 €** (céntimos) |
 
 ## 🗑️ Borrarlo todo
@@ -276,6 +298,7 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 | `ConnectionStringParseError: "connection timeout" is not a recognized keyword` | El driver `mssql-python` solo admite una lista cerrada de palabras clave en la cadena de conexión | Quitar `Connection Timeout` de la cadena y pasar el tiempo de espera en el código: `connect(..., timeout=60)` |
 | Host vacío al leer la URL de la Function con Azure CLI | En Flex Consumption, `az functionapp show --query defaultHostName` devuelve vacío | Leer `properties.defaultHostName`. Los scripts `ejecutar_manual` y la salida `hostFunction` del Bicep ya lo hacen así |
 | `AADSTS700213: No matching federated identity record found` al iniciar sesión desde GitHub Actions | GitHub envió el *subject* con **IDs inmutables** (`repo:SamAnaya11@200885290/Agroeco-EU_Cloud-Pipeline@1452895973:ref:refs/heads/main`) y la credencial federada esperaba el formato clásico, sin IDs | Copiar el *subject* exacto del mensaje de error y crear una segunda credencial federada (escenario *Other issuer*) con ese valor: `scripts/credencial_federada_ids.json`. Después, *Re-run failed jobs*. Ver [`docs/cicd_oidc.md`](docs/cicd_oidc.md#aadsts700213-el-subject-con-ids-inmutables) |
+| La alerta no habría visto los fallos de `pipeline_manual` | La función capturaba el error y devolvía un 500 "controlado". Para Azure, la ejecución terminaba bien, así que no contaba en la métrica `requests/failed` | Registrar el error con `logging.exception` y **volver a lanzarlo** (`raise`), igual que `pipeline_mensual`. Comprobado con el fallo de prueba `PRUEBA_ALERTA=1`. Ver [`docs/alertas.md`](docs/alertas.md#cambio-en-pipeline_manual) |
 
 ## 📁 Estructura del proyecto
 
@@ -287,7 +310,7 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 ├── sql/              # Esquema y 10 consultas en T-SQL
 ├── scripts/          # desplegar / ejecutar_manual / borrar_todo (.ps1 y .sh), empaquetar.py, credenciales federadas (.json)
 ├── notebooks/        # Consultas contra Azure SQL
-├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, capturas/
+├── docs/             # arquitectura.md, migracion_sqlite_a_tsql.md, cicd_oidc.md, alertas.md, capturas/
 ├── .env.example
 └── README.md
 ```
@@ -357,6 +380,14 @@ la regla 0.0.0.0) exigiría integración con red virtual y un *private endpoint*
 **Permisos de GitHub en Azure.** La identidad de GitHub solo tiene el rol *Contributor* sobre `rg-agroeco-dev` (*This resource*), no sobre toda la suscripción.
 
 ![Rol Contributor en el grupo de recursos](docs/capturas/11b_iam_contributor.png)
+
+**Regla de alerta.** `alerta-fallos-agroeco-dev` vigila la métrica `requests/failed > 0` de Application Insights (*Signal type: Metrics*), con severidad *1 - Error* y activa (*Enabled*).
+
+![Regla de alerta en Azure Monitor](docs/capturas/12_alerta_regla.png)
+
+**Correo de la alerta.** El fallo de prueba (`PRUEBA_ALERTA=1`) hizo saltar la alerta: *Monitor condition: Fired* y *Metric value: 1*. Los identificadores de la alerta están tapados.
+
+![Correo de la alerta disparada](docs/capturas/13_alerta_correo.png)
 
 ## 👤 Autor
 
